@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 960" width="1920" height="960">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0D99FF"/>
+      <stop offset="100%" stop-color="#0058A8"/>
+    </linearGradient>
+    <!-- Subtle grid pattern -->
+    <pattern id="grid" x="0" y="0" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1920" height="960" fill="url(#bg)"/>
+  <rect width="1920" height="960" fill="url(#grid)"/>
+
+  <!-- Title (right side) -->
+  <g font-family="Inter, -apple-system, Segoe UI, sans-serif" fill="#FFFFFF">
+    <text x="1080" y="420" font-size="120" font-weight="800" letter-spacing="-3">Shape</text>
+    <text x="1080" y="560" font-size="120" font-weight="800" letter-spacing="-3">Connector</text>
+    <text x="1080" y="640" font-size="34" font-weight="500" fill-opacity="0.85">
+      Connect shapes with lines that follow as you move.
+    </text>
+    <text x="1080" y="690" font-size="28" font-weight="400" fill-opacity="0.6">
+      A Figma Design plugin
+    </text>
+  </g>
+
+  <!-- Diagram (left side) -->
+  <g transform="translate(140, 240)">
+    <!-- Node A: rounded rectangle -->
+    <rect x="0" y="40" width="200" height="120" rx="16" fill="#FFFFFF"/>
+    <text x="100" y="108" text-anchor="middle"
+          font-family="Inter, sans-serif" font-size="28" font-weight="600" fill="#0D99FF">A</text>
+
+    <!-- Node B: ellipse -->
+    <ellipse cx="560" cy="100" rx="110" ry="70" fill="#FFFFFF"/>
+    <text x="560" y="112" text-anchor="middle"
+          font-family="Inter, sans-serif" font-size="28" font-weight="600" fill="#0D99FF">B</text>
+
+    <!-- Node C: another rectangle (lower) -->
+    <rect x="280" y="320" width="200" height="120" rx="16" fill="#FFFFFF"/>
+    <text x="380" y="388" text-anchor="middle"
+          font-family="Inter, sans-serif" font-size="28" font-weight="600" fill="#0D99FF">C</text>
+
+    <!-- Connector A → B (orthogonal, arrow end) -->
+    <path d="M 200 100 L 360 100 L 360 100 L 450 100"
+          fill="none" stroke="#FFFFFF" stroke-width="5"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 450 100 L 432 91 L 432 109 Z" fill="#FFFFFF"/>
+
+    <!-- Connector A → C (curved, circle endpoint) -->
+    <path d="M 100 160 C 100 260, 280 280, 380 320"
+          fill="none" stroke="#FFFFFF" stroke-width="5"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="100" cy="160" r="9" fill="#FFFFFF"/>
+
+    <!-- Connector B → C (orthogonal, arrow end) -->
+    <path d="M 560 170 L 560 280 L 380 280 L 380 320"
+          fill="none" stroke="#FFFFFF" stroke-width="5"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 380 320 L 371 302 L 389 302 Z" fill="#FFFFFF"/>
+  </g>
+</svg>

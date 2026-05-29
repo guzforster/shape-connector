@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1e1e1e;
+    --muted: #6b6b6b;
+    --border: #e5e5e5;
+    --accent: #0d99ff;
+    --accent-fg: #ffffff;
+    --danger: #d93025;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #2c2c2c;
+      --fg: #f5f5f5;
+      --muted: #a0a0a0;
+      --border: #444;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 12px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  #full { padding: 10px 12px 12px; }
+  .titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .titlebar h2 {
+    font-size: 12px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .icon-btn {
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--fg);
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font: inherit;
+    line-height: 1;
+  }
+  .icon-btn:hover { background: var(--border); }
+
+  .scope-badge {
+    display: inline-block;
+    font-size: 10px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    padding: 2px 6px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg);
+  }
+  .scope-badge.editing {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .row label {
+    flex: 0 0 60px;
+    color: var(--muted);
+  }
+  select, input[type="number"], input[type="color"] {
+    font: inherit;
+    color: inherit;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+  }
+  select { flex: 1; }
+  input[type="number"] {
+    width: 52px;
+    padding-right: 2px;
+  }
+  input[type="color"] {
+    width: 32px;
+    height: 24px;
+    padding: 0;
+    cursor: pointer;
+  }
+  input[type="range"] {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    accent-color: var(--accent);
+  }
+  /* Paired [slider][number-input] layout */
+  .pair {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+  }
+  button.action {
+    font: inherit;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--fg);
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    width: 100%;
+    margin-bottom: 6px;
+  }
+  button.action.primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
+  }
+  button.action.danger { color: var(--danger); }
+  .hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+  hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 8px 0;
+  }
+  #status {
+    font-size: 11px;
+    color: var(--muted);
+    min-height: 14px;
+    margin-top: 4px;
+  }
+  /* "Mixed" state for selects when selected connectors disagree */
+  select.mixed {
+    color: var(--muted);
+    font-style: italic;
+  }
+
+  #mini {
+    display: none;
+    height: 100%;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px;
+    background: var(--bg);
+    border-radius: 4px;
+  }
+  #mini .label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #mini .dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #2ecc71;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  body.minimized #full { display: none; }
+  body.minimized #mini { display: flex; }
+</style>
+</head>
+<body>
+
+  <div id="full">
+    <div class="titlebar">
+      <h2>Shape Connector</h2>
+      <button id="minimize" class="icon-btn" title="Minimize to corner">_</button>
+    </div>
+
+    <span id="scope" class="scope-badge">Defaults for next connect</span>
+
+    <div class="row">
+      <label for="style">Line</label>
+      <select id="style">
+        <option value="orthogonal">Orthogonal</option>
+        <option value="curved">Curved</option>
+        <option value="straight">Straight</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="startEnd">Start</label>
+      <select id="startEnd">
+        <option value="none">None</option>
+        <option value="arrow">Arrow</option>
+        <option value="circle">Filled circle</option>
+        <option value="circle-hollow">Hollow circle</option>
+        <option value="square">Filled square</option>
+        <option value="square-hollow">Hollow square</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="endEnd">End</label>
+      <select id="endEnd">
+        <option value="none">None</option>
+        <option value="arrow">Arrow</option>
+        <option value="circle">Filled circle</option>
+        <option value="circle-hollow">Hollow circle</option>
+        <option value="square">Filled square</option>
+        <option value="square-hollow">Hollow square</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="color">Color</label>
+      <input type="color" id="color" value="#666666" />
+    </div>
+
+    <div class="row">
+      <label for="widthInput">Width</label>
+      <div class="pair">
+        <input type="range" id="widthRange" min="0.5" max="20" step="0.5" value="1.5" />
+        <input type="number" id="widthInput" min="0.5" max="20" step="0.5" value="1.5" />
+      </div>
+    </div>
+
+    <div class="row">
+      <label for="endSizeInput">End size</label>
+      <div class="pair">
+        <input type="range" id="endSizeRange" min="4" max="60" step="1" value="10" />
+        <input type="number" id="endSizeInput" min="4" max="60" step="1" value="10" />
+      </div>
+    </div>
+
+    <button id="connect" class="action primary">Connect selected shapes</button>
+
+    <hr />
+
+    <button id="refresh" class="action">Refresh all connectors</button>
+    <button id="disconnect" class="action danger">Delete selected connectors</button>
+
+    <div id="status"></div>
+
+    <div class="hint">
+      Select 2+ shapes to connect them. Select existing connectors to edit
+      their style — controls show "Editing N connector(s)" when applicable.
+    </div>
+  </div>
+
+  <div id="mini">
+    <span class="label"><span class="dot"></span>Shape Connector</span>
+    <button id="expand" class="icon-btn" title="Expand">▣</button>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  function send(type, extra) {
+    parent.postMessage({ pluginMessage: { type, ...extra } }, "*");
+  }
+
+  // --- Color conversion ---------------------------------------------------
+  function hexToRgb01(hex) {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+    if (!m) return { r: 0.4, g: 0.4, b: 0.4 };
+    return {
+      r: parseInt(m[1], 16) / 255,
+      g: parseInt(m[2], 16) / 255,
+      b: parseInt(m[3], 16) / 255
+    };
+  }
+  function rgb01ToHex(c) {
+    const toHex = (v) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, "0");
+    return "#" + toHex(c.r) + toHex(c.g) + toHex(c.b);
+  }
+
+  // --- Build the current control values into a style patch ----------------
+  function readControls() {
+    return {
+      style: $("style").value,
+      startEnd: $("startEnd").value,
+      endEnd: $("endEnd").value,
+      color: hexToRgb01($("color").value),
+      width: parseFloat($("widthInput").value) || 1.5,
+      endSize: parseFloat($("endSizeInput").value) || 10
+    };
+  }
+
+  // Slider+input pair: keep them in sync, fire one pushChange per change.
+  // The slider fires "input" continuously (live drag); the input fires
+  // "change" on blur/Enter. We debounce slider input to avoid flooding the
+  // plugin during a drag.
+  let sliderTimer = null;
+  function bindPair(rangeId, inputId) {
+    const range = $(rangeId);
+    const input = $(inputId);
+    range.addEventListener("input", () => {
+      input.value = range.value;
+      input.placeholder = "";
+      range.style.opacity = "1";
+      if (sliderTimer) clearTimeout(sliderTimer);
+      sliderTimer = setTimeout(() => { sliderTimer = null; pushChange(); }, 40);
+    });
+    input.addEventListener("change", () => {
+      // Clamp into the range bounds, then mirror to the slider.
+      let v = parseFloat(input.value);
+      if (isNaN(v)) v = parseFloat(range.value);
+      const min = parseFloat(range.min), max = parseFloat(range.max);
+      v = Math.max(min, Math.min(max, v));
+      input.value = v;
+      range.value = v;
+      input.placeholder = "";
+      pushChange();
+    });
+  }
+
+  // Track whether we're echoing plugin state (avoid feedback loop).
+  let suppressChange = false;
+
+  // Push a style change to the plugin. The plugin decides whether to apply
+  // to the current selection or save as defaults, based on what's selected.
+  function pushChange() {
+    if (suppressChange) return;
+    send("setStyle", { patch: readControls() });
+  }
+
+  // Mixed-state helpers: when selected connectors disagree on a field, the
+  // plugin sends a null value for that field. We mark the select with a
+  // "mixed" placeholder option that's selected without changing the data.
+  function setSelectValue(sel, value) {
+    // Remove any previous mixed placeholder.
+    const existing = sel.querySelector("option[data-mixed]");
+    if (existing) existing.remove();
+    if (value === null) {
+      const opt = document.createElement("option");
+      opt.value = "__mixed__";
+      opt.textContent = "Mixed";
+      opt.setAttribute("data-mixed", "1");
+      sel.insertBefore(opt, sel.firstChild);
+      sel.value = "__mixed__";
+      sel.classList.add("mixed");
+    } else {
+      sel.value = value;
+      sel.classList.remove("mixed");
+    }
+  }
+
+  function setNumberValue(input, value) {
+    if (value === null) {
+      input.placeholder = "Mixed";
+      input.value = "";
+    } else {
+      input.placeholder = "";
+      input.value = String(value);
+    }
+  }
+
+  // Set both the slider and the number input from a single value (or null=Mixed).
+  function setPairValue(rangeId, inputId, value) {
+    const range = $(rangeId);
+    const input = $(inputId);
+    setNumberValue(input, value);
+    if (value === null) {
+      // Slider can't represent "mixed" — leave it at its current position but
+      // dim it so the user knows clicking it will commit a value.
+      range.style.opacity = "0.4";
+    } else {
+      range.style.opacity = "1";
+      range.value = String(value);
+    }
+  }
+
+  function setColorValue(input, value) {
+    if (value === null) {
+      // <input type=color> can't show "mixed" — fall back to muting it.
+      input.style.opacity = "0.4";
+      // Leave whatever it currently shows; user click will set a fresh color.
+    } else {
+      input.style.opacity = "1";
+      input.value = rgb01ToHex(value);
+    }
+  }
+
+  function updateScopeBadge(selectedCount) {
+    const badge = $("scope");
+    if (selectedCount > 0) {
+      badge.textContent = `Editing ${selectedCount} connector${selectedCount === 1 ? "" : "s"}`;
+      badge.classList.add("editing");
+    } else {
+      badge.textContent = "Defaults for next connect";
+      badge.classList.remove("editing");
+    }
+  }
+
+  // --- Wire up controls ---------------------------------------------------
+  for (const id of ["style", "startEnd", "endEnd"]) {
+    $(id).addEventListener("change", () => {
+      // Strip the mixed placeholder if user picks a real value.
+      const opt = $(id).querySelector("option[data-mixed]");
+      if (opt) opt.remove();
+      $(id).classList.remove("mixed");
+      pushChange();
+    });
+  }
+  $("color").addEventListener("input", () => {
+    $("color").style.opacity = "1";
+    pushChange();
+  });
+  bindPair("widthRange", "widthInput");
+  bindPair("endSizeRange", "endSizeInput");
+
+  $("connect").addEventListener("click", () => send("connect"));
+  $("refresh").addEventListener("click", () => send("refresh"));
+  $("disconnect").addEventListener("click", () => send("disconnect"));
+
+  $("minimize").addEventListener("click", () => {
+    document.body.classList.add("minimized");
+    send("minimize");
+  });
+  $("expand").addEventListener("click", () => {
+    document.body.classList.remove("minimized");
+    send("expand");
+  });
+
+  // --- Receive state from plugin -----------------------------------------
+  window.addEventListener("message", (e) => {
+    const msg = e.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === "status") {
+      $("status").textContent = msg.text || "";
+      return;
+    }
+    if (msg.type === "defaults") {
+      const d = msg.defaults || {};
+      suppressChange = true;
+      setSelectValue($("style"), d.style || "orthogonal");
+      setSelectValue($("startEnd"), d.startEnd || "none");
+      setSelectValue($("endEnd"), d.endEnd || "arrow");
+      setColorValue($("color"), d.color || { r: 0.4, g: 0.4, b: 0.4 });
+      setPairValue("widthRange", "widthInput", d.width != null ? d.width : 1.5);
+      setPairValue("endSizeRange", "endSizeInput", d.endSize != null ? d.endSize : 10);
+      suppressChange = false;
+      return;
+    }
+    if (msg.type === "selection") {
+      suppressChange = true;
+      updateScopeBadge(msg.selectedCount || 0);
+      if (msg.selectedCount > 0) {
+        setSelectValue($("style"), msg.style);
+        setSelectValue($("startEnd"), msg.startEnd);
+        setSelectValue($("endEnd"), msg.endEnd);
+        setColorValue($("color"), msg.color);
+        setPairValue("widthRange", "widthInput", msg.width);
+        setPairValue("endSizeRange", "endSizeInput", msg.endSize);
+      }
+      suppressChange = false;
+    }
+  });
+</script>
+</body>
+</html>

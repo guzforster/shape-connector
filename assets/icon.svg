@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Background tile -->
+  <rect width="128" height="128" rx="20" fill="#0D99FF"/>
+
+  <!-- Connector line: orthogonal route from left shape to right shape -->
+  <path
+    d="M 38 64 L 56 64 L 56 88 L 88 88"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <!-- Arrowhead at the end of the line -->
+  <path
+    d="M 88 88 L 80 84 L 80 92 Z"
+    fill="#FFFFFF"
+  />
+
+  <!-- Source shape (square, top-left) -->
+  <rect x="24" y="50" width="28" height="28" rx="4" fill="#FFFFFF"/>
+  <!-- Target shape (circle, bottom-right) -->
+  <circle cx="98" cy="88" r="14" fill="#FFFFFF"/>
+</svg>

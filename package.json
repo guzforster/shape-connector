@@ -1,0 +1,32 @@
+{
+  "name": "shape-connector",
+  "version": "0.1.0",
+  "description": "Figma Design plugin that connects shapes with auto-routed lines that stay attached when shapes move.",
+  "author": "Gustavo Forster",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guzforster/shape-connector.git"
+  },
+  "bugs": {
+    "url": "https://github.com/guzforster/shape-connector/issues"
+  },
+  "homepage": "https://github.com/guzforster/shape-connector#readme",
+  "keywords": [
+    "figma",
+    "figma-plugin",
+    "connector",
+    "diagram",
+    "flowchart",
+    "arrows",
+    "shapes"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.100.2",
+    "typescript": "^5.4.5"
+  }
+}
