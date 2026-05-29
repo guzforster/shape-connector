@@ -275,6 +275,11 @@ function closestOutlinePoint(node, ref) {
     const segments = nodeOutlineSegments(node);
     if (segments.length === 0)
         return null;
+    // Rectangles snap to edge midpoints only — connecting to a corner of a
+    // box has no clear use case in flowchart-style diagrams. Other polygons
+    // (triangle, star, etc.) keep both corners and midpoints as candidates
+    // because their vertices are often meaningful attach points.
+    const skipCorners = node.type === "RECTANGLE";
     function dist2(p) {
         const dx = p.x - ref.x;
         const dy = p.y - ref.y;
@@ -291,9 +296,10 @@ function closestOutlinePoint(node, ref) {
     }
     for (const seg of segments) {
         if (seg.kind === "line") {
-            // Corners and midpoint as discrete snap candidates.
-            consider(seg.a);
-            consider(seg.b);
+            if (!skipCorners) {
+                consider(seg.a);
+                consider(seg.b);
+            }
             consider({ x: (seg.a.x + seg.b.x) / 2, y: (seg.a.y + seg.b.y) / 2 });
         }
         else {
