@@ -1,9 +1,11 @@
 # Shape Connector
 
+> **Beta — v0.2.0.** This plugin is in active development. Expect rough edges, breaking changes between versions, and the occasional bug. Feedback and issue reports are very welcome.
+
 A Figma **Design** plugin that connects any shape to any other shape with a line that stays attached when you move the shapes.
 
 <p align="center">
-  <img src="assets/cover.svg" alt="Shape Connector cover" width="800" />
+  <img src="assets/cover.png" alt="Shape Connector cover" width="800" />
 </p>
 
 ## Features
@@ -74,8 +76,8 @@ ui.html           Plugin panel UI
 tsconfig.json     TypeScript config
 package.json      npm scripts + Figma plugin typings
 assets/
-  icon.svg        128x128 plugin icon
-  cover.svg       1920x960 cover image for the Community listing
+  icon.png        128x128 plugin icon
+  cover.png       1920x960 cover image for the Community listing
 ```
 
 ## Development
