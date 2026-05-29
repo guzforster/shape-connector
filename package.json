@@ -1,6 +1,6 @@
 {
   "name": "shape-connector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Figma Design plugin that connects shapes with auto-routed lines that stay attached when shapes move.",
   "author": "Gustavo Forster",
   "license": "MIT",

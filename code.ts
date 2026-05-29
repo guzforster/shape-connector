@@ -151,6 +151,243 @@ function anchorOn(r: Box, side: Side): Point {
   }
 }
 
+// --- Outline geometry -------------------------------------------------------
+//
+// For non-rectangular shapes (stars, polygons, custom vectors), we want the
+// connector to attach at the actual outline rather than the axis-aligned
+// bounding box. We read `node.fillGeometry` (Figma's resolved vector path
+// in node-local coords), transform to absolute coords, then find the closest
+// point on the resulting line+bezier segments to a reference point (the
+// other shape's center).
+
+type Segment =
+  | { kind: "line"; a: Point; b: Point }
+  | { kind: "cubic"; a: Point; c1: Point; c2: Point; b: Point };
+
+function applyTransform(p: Point, m: Transform): Point {
+  // Transform is [[a, b, tx], [c, d, ty]]; result = [a*x + b*y + tx, c*x + d*y + ty].
+  return {
+    x: m[0][0] * p.x + m[0][1] * p.y + m[0][2],
+    y: m[1][0] * p.x + m[1][1] * p.y + m[1][2]
+  };
+}
+
+/** Parse an SVG path string into a flat list of line/cubic segments in the
+ *  same coord space as the path string. Handles M, L, H, V, C, Z. */
+function parsePathSegments(data: string): Segment[] {
+  const tokens = data.match(/[a-zA-Z]|-?\d*\.?\d+(?:e[-+]?\d+)?/g) || [];
+  const segments: Segment[] = [];
+  let i = 0;
+  const num = () => parseFloat(tokens[i++]);
+  let cur: Point = { x: 0, y: 0 };
+  let start: Point = { x: 0, y: 0 };
+  while (i < tokens.length) {
+    const tok = tokens[i++];
+    switch (tok) {
+      case "M": {
+        cur = { x: num(), y: num() };
+        start = cur;
+        // Subsequent pairs after M are implicit L.
+        while (i < tokens.length && /^-?\d/.test(tokens[i])) {
+          const next: Point = { x: num(), y: num() };
+          segments.push({ kind: "line", a: cur, b: next });
+          cur = next;
+        }
+        break;
+      }
+      case "L": {
+        while (i < tokens.length && /^-?\d/.test(tokens[i])) {
+          const next: Point = { x: num(), y: num() };
+          segments.push({ kind: "line", a: cur, b: next });
+          cur = next;
+        }
+        break;
+      }
+      case "H": {
+        while (i < tokens.length && /^-?\d/.test(tokens[i])) {
+          const next: Point = { x: num(), y: cur.y };
+          segments.push({ kind: "line", a: cur, b: next });
+          cur = next;
+        }
+        break;
+      }
+      case "V": {
+        while (i < tokens.length && /^-?\d/.test(tokens[i])) {
+          const next: Point = { x: cur.x, y: num() };
+          segments.push({ kind: "line", a: cur, b: next });
+          cur = next;
+        }
+        break;
+      }
+      case "C": {
+        while (i < tokens.length && /^-?\d/.test(tokens[i])) {
+          const c1: Point = { x: num(), y: num() };
+          const c2: Point = { x: num(), y: num() };
+          const b: Point = { x: num(), y: num() };
+          segments.push({ kind: "cubic", a: cur, c1, c2, b });
+          cur = b;
+        }
+        break;
+      }
+      case "Z":
+      case "z": {
+        if (cur.x !== start.x || cur.y !== start.y) {
+          segments.push({ kind: "line", a: cur, b: start });
+        }
+        cur = start;
+        break;
+      }
+      // Q (quadratic), A (arc), S/T (smooth) are not emitted by Figma's
+      // fillGeometry for the built-in primitives we care about. If they
+      // appear, we skip safely.
+      default:
+        break;
+    }
+  }
+  return segments;
+}
+
+function nodeOutlineSegments(node: SceneNode): Segment[] {
+  // fillGeometry exists on most shape nodes (RECTANGLE, ELLIPSE, POLYGON,
+  // STAR, VECTOR, TEXT, BOOLEAN_OPERATION). For others (group, frame), we
+  // return no segments so the caller falls back to bbox.
+  if (!("fillGeometry" in node)) return [];
+  const paths = (node as GeometryMixin).fillGeometry;
+  if (!paths || paths.length === 0) return [];
+  const transform = (node as LayoutMixin).absoluteTransform;
+  const all: Segment[] = [];
+  for (const p of paths) {
+    const local = parsePathSegments(p.data);
+    for (const seg of local) {
+      if (seg.kind === "line") {
+        all.push({ kind: "line", a: applyTransform(seg.a, transform), b: applyTransform(seg.b, transform) });
+      } else {
+        all.push({
+          kind: "cubic",
+          a: applyTransform(seg.a, transform),
+          c1: applyTransform(seg.c1, transform),
+          c2: applyTransform(seg.c2, transform),
+          b: applyTransform(seg.b, transform)
+        });
+      }
+    }
+  }
+  return all;
+}
+
+/** Closest point on a line segment to reference p, returned as the point and
+ *  the unit tangent at that point (along the segment direction). */
+function closestOnLine(a: Point, b: Point, p: Point): { point: Point; tangent: Point; dist2: number } {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  let t = 0.5;
+  if (len2 > 1e-9) {
+    t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+  }
+  const point = { x: a.x + t * dx, y: a.y + t * dy };
+  const dxp = p.x - point.x, dyp = p.y - point.y;
+  return { point, tangent: normalize({ x: dx, y: dy }), dist2: dxp * dxp + dyp * dyp };
+}
+
+function cubicAt(a: Point, c1: Point, c2: Point, b: Point, t: number): Point {
+  const u = 1 - t;
+  const k0 = u * u * u;
+  const k1 = 3 * u * u * t;
+  const k2 = 3 * u * t * t;
+  const k3 = t * t * t;
+  return {
+    x: k0 * a.x + k1 * c1.x + k2 * c2.x + k3 * b.x,
+    y: k0 * a.y + k1 * c1.y + k2 * c2.y + k3 * b.y
+  };
+}
+
+function cubicDerivAt(a: Point, c1: Point, c2: Point, b: Point, t: number): Point {
+  const u = 1 - t;
+  return {
+    x: 3 * u * u * (c1.x - a.x) + 6 * u * t * (c2.x - c1.x) + 3 * t * t * (b.x - c2.x),
+    y: 3 * u * u * (c1.y - a.y) + 6 * u * t * (c2.y - c1.y) + 3 * t * t * (b.y - c2.y)
+  };
+}
+
+/** Closest point on a cubic bezier to reference p, via sampling. ~32 samples
+ *  is more than enough for the resolution of a connector attachment. */
+function closestOnCubic(a: Point, c1: Point, c2: Point, b: Point, p: Point): { point: Point; tangent: Point; dist2: number } {
+  const SAMPLES = 32;
+  let best = { point: a, tangent: { x: 1, y: 0 }, dist2: Infinity };
+  for (let i = 0; i <= SAMPLES; i++) {
+    const t = i / SAMPLES;
+    const pt = cubicAt(a, c1, c2, b, t);
+    const dx = p.x - pt.x, dy = p.y - pt.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < best.dist2) {
+      best = { point: pt, tangent: normalize(cubicDerivAt(a, c1, c2, b, t)), dist2: d2 };
+    }
+  }
+  return best;
+}
+
+/** Find the closest connection point on a shape's outline to a reference
+ *  point. Returns null if the shape has no extractable geometry.
+ *
+ *  Candidate points considered:
+ *   - For each LINE segment in the outline: both endpoints (corners) and the
+ *     segment midpoint.
+ *   - For each CUBIC segment: the closest point along the curve (sampled).
+ *  The closest candidate to `ref` wins.
+ *
+ *  This gives snappy, predictable behavior on polygonal shapes (square →
+ *  4 corners + 4 side midpoints = 8 attach points; star → 10 corners + 10
+ *  edge midpoints = 20), while keeping smooth attachment on rounded shapes.
+ *
+ *  Outward direction is computed from the shape's centroid (bbox center)
+ *  to the attach point — robust at vertices where a tangent-based normal
+ *  would flip 180° between adjacent segments. */
+function closestOutlinePoint(node: SceneNode, ref: Point): { point: Point; outwardTangent: Point } | null {
+  const segments = nodeOutlineSegments(node);
+  if (segments.length === 0) return null;
+
+  function dist2(p: Point): number {
+    const dx = p.x - ref.x;
+    const dy = p.y - ref.y;
+    return dx * dx + dy * dy;
+  }
+
+  let bestPoint: Point | null = null;
+  let bestD2 = Infinity;
+  function consider(p: Point): void {
+    const d = dist2(p);
+    if (d < bestD2) { bestD2 = d; bestPoint = p; }
+  }
+
+  for (const seg of segments) {
+    if (seg.kind === "line") {
+      // Corners and midpoint as discrete snap candidates.
+      consider(seg.a);
+      consider(seg.b);
+      consider({ x: (seg.a.x + seg.b.x) / 2, y: (seg.a.y + seg.b.y) / 2 });
+    } else {
+      // Cubics aren't polygonal — keep continuous attachment.
+      const r = closestOnCubic(seg.a, seg.c1, seg.c2, seg.b, ref);
+      consider(r.point);
+    }
+  }
+
+  if (!bestPoint) return null;
+
+  const box = rectFor(node);
+  const attachPt: Point = bestPoint;
+  const dx = attachPt.x - box.cx;
+  const dy = attachPt.y - box.cy;
+  if (dx * dx + dy * dy < 1e-6) {
+    const toRef = normalize({ x: ref.x - attachPt.x, y: ref.y - attachPt.y });
+    return { point: attachPt, outwardTangent: toRef };
+  }
+  return { point: attachPt, outwardTangent: normalize({ x: dx, y: dy }) };
+}
+
 function edgePointTowards(r: Box, target: Point): Point {
   // Intersect the line from rect center to target with the rect boundary.
   const dx = target.x - r.cx;
@@ -231,18 +468,51 @@ function fmt(p: Point, o: Point): string {
   return `${p.x - o.x} ${p.y - o.y}`;
 }
 
-function buildStraightPath(a: Box, b: Box): BuiltPath {
-  const pa = edgePointTowards(a, { x: b.cx, y: b.cy });
-  const pb = edgePointTowards(b, { x: a.cx, y: a.cy });
-  // Tangent at start points back toward A (away from line); at end, back toward B.
-  const dir = normalize({ x: pb.x - pa.x, y: pb.y - pa.y });
+function shiftAlong(p: Point, t: Point, dist: number): Point {
+  // Move point p by `dist` along unit tangent t. Used to inset endpoints so
+  // the line stops at an arrow's base instead of overlapping the triangle.
+  return { x: p.x + t.x * dist, y: p.y + t.y * dist };
+}
+
+/** Attach point + INWARD tangent (pointing into the shape — direction an
+ *  arrow at this attach point would point). Uses the outline if available,
+ *  otherwise falls back to the bbox edge intersection. */
+function attachPoint(node: SceneNode, towards: Point): { point: Point; inward: Point } {
+  const outline = closestOutlinePoint(node, towards);
+  if (outline) {
+    return { point: outline.point, inward: { x: -outline.outwardTangent.x, y: -outline.outwardTangent.y } };
+  }
+  // Fallback: ray from shape center to `towards`, intersect bbox edge.
+  const box = rectFor(node);
+  const point = edgePointTowards(box, towards);
+  const inward = normalize({ x: box.cx - point.x, y: box.cy - point.y });
+  return { point, inward };
+}
+
+function buildStraightPath(srcNode: SceneNode, tgtNode: SceneNode, startInset: number, endInset: number): BuiltPath {
+  const aBox = rectFor(srcNode);
+  const bBox = rectFor(tgtNode);
+  const aAttach = attachPoint(srcNode, { x: bBox.cx, y: bBox.cy });
+  const bAttach = attachPoint(tgtNode, { x: aBox.cx, y: aBox.cy });
+  const paFull = aAttach.point;
+  const pbFull = bAttach.point;
+  const startTangent = aAttach.inward;
+  const endTangent = bAttach.inward;
+  // Inset line endpoints away from each shape's edge by the requested amount.
+  // To pull the line back from the shape, we move AGAINST the inward tangent.
+  const paLine = shiftAlong(paFull, startTangent, -startInset);
+  const pbLine = shiftAlong(pbFull, endTangent, -endInset);
+  // bboxPoints should only include points that are actually in the path
+  // data — otherwise Figma's auto-bbox-shift on vectorPaths assignment
+  // disagrees with our computed origin and the line renders offset by the
+  // gap between the path bbox and the bbox including paFull/pbFull.
   return finalize({
-    bboxPoints: [pa, pb],
-    emit: (o) => `M ${fmt(pa, o)} L ${fmt(pb, o)}`,
-    startPoint: pa,
-    endPoint: pb,
-    startTangent: { x: -dir.x, y: -dir.y },
-    endTangent: dir
+    bboxPoints: [paLine, pbLine],
+    emit: (o) => `M ${fmt(paLine, o)} L ${fmt(pbLine, o)}`,
+    startPoint: paFull,
+    endPoint: pbFull,
+    startTangent,
+    endTangent
   });
 }
 
@@ -259,69 +529,139 @@ function sideInwardTangent(side: Side): Point {
   }
 }
 
-function buildOrthogonalPath(a: Box, b: Box): BuiltPath {
+function buildOrthogonalPath(srcNode: SceneNode, tgtNode: SceneNode, startInset: number, endInset: number): BuiltPath {
+  // Orthogonal routing keeps the bbox-based attachment: connectors enter the
+  // shape's side (left/right/top/bottom), which only makes sense for an
+  // axis-aligned bbox. Outline-snap is reserved for straight/curved styles.
+  const a = rectFor(srcNode);
+  const b = rectFor(tgtNode);
   const { aSide, bSide } = chooseSides(a, b);
-  const pa = anchorOn(a, aSide);
-  const pb = anchorOn(b, bSide);
+  const paFull = anchorOn(a, aSide);
+  const pbFull = anchorOn(b, bSide);
+  const startTangent = sideInwardTangent(aSide);
+  const endTangent = sideInwardTangent(bSide);
+  // Inset line endpoints away from each shape's edge by the requested amount.
+  const paLine = shiftAlong(paFull, startTangent, -startInset);
+  const pbLine = shiftAlong(pbFull, endTangent, -endInset);
+
   const horizontal = aSide === "left" || aSide === "right";
   let v2: Point, v3: Point;
   if (horizontal) {
-    const midX = (pa.x + pb.x) / 2;
-    v2 = { x: midX, y: pa.y };
-    v3 = { x: midX, y: pb.y };
+    const midX = (paLine.x + pbLine.x) / 2;
+    v2 = { x: midX, y: paLine.y };
+    v3 = { x: midX, y: pbLine.y };
   } else {
-    const midY = (pa.y + pb.y) / 2;
-    v2 = { x: pa.x, y: midY };
-    v3 = { x: pb.x, y: midY };
+    const midY = (paLine.y + pbLine.y) / 2;
+    v2 = { x: paLine.x, y: midY };
+    v3 = { x: pbLine.x, y: midY };
   }
   return finalize({
-    bboxPoints: [pa, v2, v3, pb],
-    emit: (o) => `M ${fmt(pa, o)} L ${fmt(v2, o)} L ${fmt(v3, o)} L ${fmt(pb, o)}`,
-    startPoint: pa,
-    endPoint: pb,
-    // Tangent at the endpoint points OUTWARD from the connected shape, which
-    // for orthogonal routing is the direction the line exits the shape's side.
-    startTangent: sideInwardTangent(aSide),
-    endTangent: sideInwardTangent(bSide)
+    bboxPoints: [paLine, v2, v3, pbLine],
+    emit: (o) => `M ${fmt(paLine, o)} L ${fmt(v2, o)} L ${fmt(v3, o)} L ${fmt(pbLine, o)}`,
+    startPoint: paFull,
+    endPoint: pbFull,
+    startTangent,
+    endTangent
   });
 }
 
-function buildCurvedPath(a: Box, b: Box): BuiltPath {
-  const { aSide, bSide } = chooseSides(a, b);
-  const pa = anchorOn(a, aSide);
-  const pb = anchorOn(b, bSide);
-  const horizontal = aSide === "left" || aSide === "right";
-  const dx = pb.x - pa.x;
-  const dy = pb.y - pa.y;
-  const off = Math.max(40, (horizontal ? Math.abs(dx) : Math.abs(dy)) / 2);
-  let c1: Point, c2: Point;
-  if (horizontal) {
-    const sign = aSide === "right" ? 1 : -1;
-    const sign2 = bSide === "right" ? 1 : -1;
-    c1 = { x: pa.x + sign * off, y: pa.y };
-    c2 = { x: pb.x + sign2 * off, y: pb.y };
-  } else {
-    const sign = aSide === "bottom" ? 1 : -1;
-    const sign2 = bSide === "bottom" ? 1 : -1;
-    c1 = { x: pa.x, y: pa.y + sign * off };
-    c2 = { x: pb.x, y: pb.y + sign2 * off };
+/** Sample the t-values where a cubic bezier reaches an extremum in either x
+ *  or y. Returns t ∈ (0, 1) for each axis; endpoints (t=0, t=1) are already
+ *  in bboxPoints as paLine/pbLine. */
+function cubicExtremaT(p0: Point, p1: Point, p2: Point, p3: Point): number[] {
+  // For each axis, derivative = 3(1-t)²(p1-p0) + 6(1-t)t(p2-p1) + 3t²(p3-p2).
+  // Solving = 0 gives a quadratic in t: at² + bt + c = 0 where
+  //   a = -p0 + 3p1 - 3p2 + p3
+  //   b = 2(p0 - 2p1 + p2)
+  //   c = p1 - p0
+  // (per-axis).
+  const ts: number[] = [];
+  for (const ax of [0, 1]) {
+    const v0 = ax === 0 ? p0.x : p0.y;
+    const v1 = ax === 0 ? p1.x : p1.y;
+    const v2 = ax === 0 ? p2.x : p2.y;
+    const v3 = ax === 0 ? p3.x : p3.y;
+    const a = -v0 + 3 * v1 - 3 * v2 + v3;
+    const b = 2 * (v0 - 2 * v1 + v2);
+    const c = v1 - v0;
+    if (Math.abs(a) < 1e-9) {
+      if (Math.abs(b) > 1e-9) {
+        const t = -c / b;
+        if (t > 0 && t < 1) ts.push(t);
+      }
+    } else {
+      const disc = b * b - 4 * a * c;
+      if (disc >= 0) {
+        const s = Math.sqrt(disc);
+        for (const t of [(-b + s) / (2 * a), (-b - s) / (2 * a)]) {
+          if (t > 0 && t < 1) ts.push(t);
+        }
+      }
+    }
   }
+  return ts;
+}
+
+function buildCurvedPath(srcNode: SceneNode, tgtNode: SceneNode, startInset: number, endInset: number): BuiltPath {
+  const aBox = rectFor(srcNode);
+  const bBox = rectFor(tgtNode);
+  const aAttach = attachPoint(srcNode, { x: bBox.cx, y: bBox.cy });
+  const bAttach = attachPoint(tgtNode, { x: aBox.cx, y: aBox.cy });
+  const paFull = aAttach.point;
+  const pbFull = bAttach.point;
+  const startTangent = aAttach.inward;
+  const endTangent = bAttach.inward;
+  const paLine = shiftAlong(paFull, startTangent, -startInset);
+  const pbLine = shiftAlong(pbFull, endTangent, -endInset);
+
+  // Control points lie OUTSIDE each line endpoint along the outward tangent
+  // (-inward). The offset scales with the gap between shapes so the curve
+  // stays smooth at any distance.
+  const dx = pbLine.x - paLine.x;
+  const dy = pbLine.y - paLine.y;
+  const gap = Math.hypot(dx, dy);
+  const off = Math.max(40, gap / 2);
+  const c1 = { x: paLine.x - startTangent.x * off, y: paLine.y - startTangent.y * off };
+  const c2 = { x: pbLine.x - endTangent.x * off, y: pbLine.y - endTangent.y * off };
+
+  // bboxPoints must equal the curve's actual tight bbox. Control points lie
+  // OUTSIDE the curve and would inflate the bbox — that mismatches Figma's
+  // auto-computed value when vectorPaths is assigned, and the node.x/y
+  // override puts the line at the wrong absolute position. So we include only
+  // points actually on the curve: the two endpoints + any extrema in (0, 1).
+  const extremaTs = cubicExtremaT(paLine, c1, c2, pbLine);
+  const extremaPts = extremaTs.map((t) => cubicAt(paLine, c1, c2, pbLine, t));
+
   return finalize({
-    bboxPoints: [pa, pb, c1, c2],
-    emit: (o) => `M ${fmt(pa, o)} C ${fmt(c1, o)} ${fmt(c2, o)} ${fmt(pb, o)}`,
-    startPoint: pa,
-    endPoint: pb,
-    startTangent: sideInwardTangent(aSide),
-    endTangent: sideInwardTangent(bSide)
+    bboxPoints: [paLine, pbLine, ...extremaPts],
+    emit: (o) => `M ${fmt(paLine, o)} C ${fmt(c1, o)} ${fmt(c2, o)} ${fmt(pbLine, o)}`,
+    startPoint: paFull,
+    endPoint: pbFull,
+    startTangent,
+    endTangent
   });
 }
 
-function buildPath(style: LineStyle, a: Box, b: Box): BuiltPath {
+function insetFor(style: EndStyle, endSize: number): number {
+  // Only arrows need inset — their triangle occupies endSize pixels of length
+  // and the line would otherwise overlap the body. Circles/squares are
+  // centered on the endpoint, so the line meeting the endpoint sits behind
+  // them naturally.
+  return style === "arrow" ? endSize : 0;
+}
+
+function buildPath(
+  style: LineStyle,
+  srcNode: SceneNode,
+  tgtNode: SceneNode,
+  startInset: number,
+  endInset: number
+): BuiltPath {
   switch (style) {
-    case "straight":   return buildStraightPath(a, b);
-    case "curved":     return buildCurvedPath(a, b);
+    case "straight":   return buildStraightPath(srcNode, tgtNode, startInset, endInset);
+    case "curved":     return buildCurvedPath(srcNode, tgtNode, startInset, endInset);
     case "orthogonal":
-    default:           return buildOrthogonalPath(a, b);
+    default:           return buildOrthogonalPath(srcNode, tgtNode, startInset, endInset);
   }
 }
 
@@ -417,7 +757,11 @@ async function paintLine(
   line.strokes = [{ type: "SOLID", color }];
   line.strokeWeight = width;
   line.fills = [];
-  line.strokeCap = "NONE";
+  // ROUND cap so the line's end visually meets the arrow base from any
+  // approach angle (NONE leaves a flat edge that's perpendicular to the
+  // line's tangent — on curved paths that doesn't match the triangle's
+  // axis-aligned back edge and leaves a visible gap).
+  line.strokeCap = "ROUND";
 }
 
 // --- Connection lifecycle ---------------------------------------------------
@@ -427,9 +771,13 @@ async function createConnector(
   target: SceneNode,
   defaults: Defaults
 ): Promise<Connection> {
-  const a = rectFor(source);
-  const b = rectFor(target);
-  const built = buildPath(defaults.style, a, b);
+  const built = buildPath(
+    defaults.style,
+    source,
+    target,
+    insetFor(defaults.startEnd, defaults.endSize),
+    insetFor(defaults.endEnd, defaults.endSize)
+  );
 
   const line = figma.createVector();
   line.name = "line";
@@ -494,9 +842,13 @@ async function rerouteConnection(conn: Connection): Promise<boolean> {
   if (!source || !target) return false;
   if (!("absoluteBoundingBox" in source) || !("absoluteBoundingBox" in target)) return false;
 
-  const a = rectFor(source as SceneNode);
-  const b = rectFor(target as SceneNode);
-  const built = buildPath(conn.style, a, b);
+  const built = buildPath(
+    conn.style,
+    source as SceneNode,
+    target as SceneNode,
+    insetFor(conn.startEnd, conn.endSize),
+    insetFor(conn.endEnd, conn.endSize)
+  );
   await paintLine(line as VectorNode, built, conn.color, conn.width);
 
   if (conn.startCapId) {

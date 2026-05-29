@@ -4,6 +4,7 @@ node_modules/
 Thumbs.db
 .vscode/
 .idea/
+.claude/
 
 # code.js IS tracked — it's the runtime Figma loads when someone imports
 # manifest.json. Don't add it to this file.
