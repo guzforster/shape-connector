@@ -13,7 +13,7 @@ A Figma plugin that connects any shape to any other shape with a line that stays
 - **Connect any shape** — select two or more shapes and click **Connect**. Connectors are drawn as a chain: `A → B → C → …`.
 - **Lines that follow** — connectors auto-reroute as you drag shapes around, and snap into final position the moment you release.
 - **Three line styles** — Orthogonal (right-angle), Curved (S-bezier), or Straight.
-- **Six endpoint shapes per end** — None, Arrow, Filled circle, Hollow circle, Filled square, Hollow square. Source and target are configured independently.
+- **Eight endpoint shapes per end** — None, Arrow, Filled/Hollow circle, Filled/Hollow square, Filled/Hollow semi-circle. Source and target are configured independently.
 - **Per-connector styling** — color, line width (0.5–20 px), endpoint size (4–60 px). All controls work on a single selected connector or a multi-selection.
 - **Editing existing connectors** — select any connector on the canvas; the panel switches into "Editing N connectors" mode and any control change applies to the selection.
 - **Minimize to corner** — collapse the UI to a slim strip docked at the bottom-right of the viewport, so the plugin can keep running and gets out of your way while you work.
@@ -86,10 +86,6 @@ Reload the plugin in Figma after each rebuild — either re-run it from the Plug
 ## Contributing
 
 Bug reports and pull requests welcome at <https://github.com/guzforster/shape-connector/issues>.
-
-## Known issues
-
-- **Orthogonal style with non-rectangular shapes.** The orthogonal (right-angle) routing always enters and exits each shape via its axis-aligned bounding box, not the actual outline. For stars, irregular polygons, and other non-rectangular shapes this can leave the line floating outside the shape rather than landing on an edge or vertex. As a workaround, use the **Curved** or **Straight** styles when at least one endpoint is a non-rectangular shape — both honour the actual outline and snap to vertex/midpoint candidates.
 
 ## License
 

@@ -9,10 +9,15 @@ type EndStyle =
   | "circle"
   | "square"
   | "circle-hollow"
-  | "square-hollow";
+  | "square-hollow"
+  | "semi-circle"
+  | "semi-circle-hollow";
 
 const LINE_STYLES: LineStyle[] = ["orthogonal", "curved", "straight"];
-const END_STYLES: EndStyle[] = ["none", "arrow", "circle", "square", "circle-hollow", "square-hollow"];
+const END_STYLES: EndStyle[] = [
+  "none", "arrow", "circle", "square", "circle-hollow", "square-hollow",
+  "semi-circle", "semi-circle-hollow"
+];
 
 function isLineStyle(v: unknown): v is LineStyle {
   return typeof v === "string" && (LINE_STYLES as string[]).includes(v);
@@ -489,11 +494,20 @@ function attachPoint(node: SceneNode, towards: Point): { point: Point; inward: P
   if (outline) {
     return { point: outline.point, inward: { x: -outline.outwardTangent.x, y: -outline.outwardTangent.y } };
   }
-  // Fallback: ray from shape center to `towards`, intersect bbox edge.
+  // Fallback for shapes without extractable geometry (groups, frames without
+  // a fill, etc.). Pick the bbox side facing the target — by whichever axis
+  // dominates the centroid-to-target vector — and use that side's midpoint
+  // with an axis-aligned inward tangent. This matches how rectangles attach,
+  // so the curved path doesn't degenerate to a straight line for groups
+  // (which would happen if inward followed the center-to-center diagonal).
   const box = rectFor(node);
-  const point = edgePointTowards(box, towards);
-  const inward = normalize({ x: box.cx - point.x, y: box.cy - point.y });
-  return { point, inward };
+  const dx = towards.x - box.cx;
+  const dy = towards.y - box.cy;
+  const side: Side =
+    Math.abs(dx) >= Math.abs(dy)
+      ? (dx >= 0 ? "right" : "left")
+      : (dy >= 0 ? "bottom" : "top");
+  return { point: anchorOn(box, side), inward: sideInwardTangent(side) };
 }
 
 function buildStraightPath(srcNode: SceneNode, tgtNode: SceneNode, startInset: number, endInset: number): BuiltPath {
@@ -536,15 +550,74 @@ function sideInwardTangent(side: Side): Point {
   }
 }
 
+/** Coordinates where the outline crosses an axis-aligned center line.
+ *  For horizontal=true we scan the line y=axisValue and return the x of every
+ *  crossing; for horizontal=false we scan x=axisValue and return crossing y's.
+ *  Cubic segments are flattened into short line chords before testing. */
+function axisCrossings(segments: Segment[], horizontal: boolean, axisValue: number): number[] {
+  const out: number[] = [];
+  function lineCross(a: Point, b: Point): void {
+    const av = horizontal ? a.y : a.x;
+    const bv = horizontal ? b.y : b.x;
+    const denom = bv - av;
+    if (Math.abs(denom) < 1e-9) return; // parallel to the scan line; skip
+    const t = (axisValue - av) / denom;
+    if (t < 0 || t > 1) return;
+    out.push(horizontal ? a.x + t * (b.x - a.x) : a.y + t * (b.y - a.y));
+  }
+  for (const seg of segments) {
+    if (seg.kind === "line") {
+      lineCross(seg.a, seg.b);
+    } else {
+      let prev = seg.a;
+      const N = 24;
+      for (let i = 1; i <= N; i++) {
+        const pt = cubicAt(seg.a, seg.c1, seg.c2, seg.b, i / N);
+        lineCross(prev, pt);
+        prev = pt;
+      }
+    }
+  }
+  return out;
+}
+
+/** Orthogonal attach point on a shape's real outline for the given side.
+ *  Casts a ray from the bbox center along the side's outward normal and
+ *  returns the farthest outline crossing — the outer boundary on that side —
+ *  keeping the same x (top/bottom) or y (left/right) as the bbox center so the
+ *  connector still exits orthogonally. Returns null when the shape exposes no
+ *  geometry (groups, frames) so the caller falls back to the bbox anchor. */
+function orthogonalSidePoint(node: SceneNode, box: Box, side: Side): Point | null {
+  const segments = nodeOutlineSegments(node);
+  if (segments.length === 0) return null;
+  const horizontal = side === "left" || side === "right";
+  const axisValue = horizontal ? box.cy : box.cx; // scan line through the center
+  const base = horizontal ? box.cx : box.cy;       // center coord along the ray
+  const dir = side === "left" || side === "top" ? -1 : 1;
+  let best: number | null = null;
+  for (const c of axisCrossings(segments, horizontal, axisValue)) {
+    const signed = (c - base) * dir; // distance from center toward the side
+    if (signed <= 0.01) continue;    // crossing is on the wrong side
+    if (best === null || signed > best) best = signed;
+  }
+  if (best === null) return null;
+  const coord = base + dir * best;
+  return horizontal ? { x: coord, y: box.cy } : { x: box.cx, y: coord };
+}
+
 function buildOrthogonalPath(srcNode: SceneNode, tgtNode: SceneNode, startInset: number, endInset: number): BuiltPath {
-  // Orthogonal routing keeps the bbox-based attachment: connectors enter the
-  // shape's side (left/right/top/bottom), which only makes sense for an
-  // axis-aligned bbox. Outline-snap is reserved for straight/curved styles.
+  // Orthogonal routing enters the shape's side (left/right/top/bottom) along a
+  // horizontal or vertical ray through the bbox center. For non-rectangular
+  // shapes (stars, polygons), snap that ray to the real outline so the line
+  // lands on the shape surface instead of floating at the bounding-box edge;
+  // fall back to the bbox anchor when geometry isn't available.
   const a = rectFor(srcNode);
   const b = rectFor(tgtNode);
   const { aSide, bSide } = chooseSides(a, b);
-  const paFull = anchorOn(a, aSide);
-  const pbFull = anchorOn(b, bSide);
+  const aOutline = orthogonalSidePoint(srcNode, a, aSide);
+  const bOutline = orthogonalSidePoint(tgtNode, b, bSide);
+  const paFull = aOutline ? aOutline : anchorOn(a, aSide);
+  const pbFull = bOutline ? bOutline : anchorOn(b, bSide);
   const startTangent = sideInwardTangent(aSide);
   const endTangent = sideInwardTangent(bSide);
   // Inset line endpoints away from each shape's edge by the requested amount.
@@ -650,11 +723,14 @@ function buildCurvedPath(srcNode: SceneNode, tgtNode: SceneNode, startInset: num
 }
 
 function insetFor(style: EndStyle, endSize: number): number {
-  // Only arrows need inset — their triangle occupies endSize pixels of length
-  // and the line would otherwise overlap the body. Circles/squares are
-  // centered on the endpoint, so the line meeting the endpoint sits behind
-  // them naturally.
-  return style === "arrow" ? endSize : 0;
+  // Arrows occupy endSize along their axis (tip at the shape edge, base
+  // endSize back along the line). Semi-circles sit flush at the shape edge
+  // and bulge outward by endSize/2 (the radius), so the line should stop at
+  // the dome's apex. Circles and squares are centered on the endpoint and
+  // visually cover the meeting point, so no inset is needed.
+  if (style === "arrow") return endSize;
+  if (style === "semi-circle" || style === "semi-circle-hollow") return endSize / 2;
+  return 0;
 }
 
 function buildPath(
@@ -703,6 +779,33 @@ function makeCapNode(style: EndStyle, color: RGB, width: number, size: number): 
     tri.strokes = [];
     return tri;
   }
+  if (style === "semi-circle" || style === "semi-circle-hollow") {
+    // Half-disk geometry. Flat (diameter) edge runs along LOCAL x=0 from
+    // (0, 0) to (0, size); apex sits at (size/2, size/2); two cubic quarters
+    // approximate the arc. The bbox is (0, 0) to (size/2, size) so Figma's
+    // vectorPaths normalization (which snaps bbox-min to local origin)
+    // doesn't shift anything — positionSemicircleCap can rely on the listed
+    // coordinates directly.
+    const r = size / 2;
+    const k = 0.5522847498 * r;
+    const semi = figma.createVector();
+    semi.vectorPaths = [{
+      windingRule: "NONZERO",
+      data:
+        `M 0 0 ` +
+        `C ${k} 0 ${size / 2} ${size / 2 - k} ${size / 2} ${size / 2} ` +
+        `C ${size / 2} ${size / 2 + k} ${k} ${size} 0 ${size} Z`
+    }];
+    if (style === "semi-circle-hollow") {
+      semi.fills = [];
+      semi.strokes = [{ type: "SOLID", color }];
+      semi.strokeWeight = Math.max(1, width);
+    } else {
+      semi.fills = [{ type: "SOLID", color }];
+      semi.strokes = [];
+    }
+    return semi;
+  }
   const isCircle = style === "circle" || style === "circle-hollow";
   const hollow = style === "circle-hollow" || style === "square-hollow";
   const node: EllipseNode | RectangleNode = isCircle
@@ -748,8 +851,35 @@ function positionArrowCap(cap: SceneNode, tip: Point, tangent: Point, size: numb
   ];
 }
 
+function positionSemicircleCap(cap: SceneNode, anchor: Point, inward: Point, size: number): void {
+  // Semi-circle local geometry: flat-edge center at (0, size/2), apex at
+  // (size/2, size/2), so local +x is the direction from flat edge to apex.
+  // We want the flat edge flush against the shape (anchor = paFull/pbFull)
+  // and the dome bulging OUTWARD over the line — opposite of inward.
+  //
+  // Rotation R sends local +x → outward = -inward, so cos = -inward.x,
+  // sin = -inward.y. Translate so the flat-edge center (local (0, size/2))
+  // lands at `anchor`:
+  //   R · (0, size/2) = (-sin · size/2, cos · size/2)
+  //   T = anchor − R · (0, size/2)
+  const cos = -inward.x;
+  const sin = -inward.y;
+  cap.relativeTransform = [
+    [cos, -sin, anchor.x + sin * size / 2],
+    [sin,  cos, anchor.y - cos * size / 2]
+  ];
+}
+
 function isVectorCap(style: EndStyle): boolean {
-  return style === "arrow";
+  return style === "arrow" || style === "semi-circle" || style === "semi-circle-hollow";
+}
+
+function positionVectorCap(cap: SceneNode, style: EndStyle, anchor: Point, inward: Point, size: number): void {
+  if (style === "semi-circle" || style === "semi-circle-hollow") {
+    positionSemicircleCap(cap, anchor, inward, size);
+  } else {
+    positionArrowCap(cap, anchor, inward, size);
+  }
 }
 
 async function paintLine(
@@ -795,7 +925,7 @@ async function createConnector(
   if (startCap) {
     startCap.name = "start-cap";
     if (isVectorCap(defaults.startEnd)) {
-      positionArrowCap(startCap, built.startPoint, built.startTangent, defaults.endSize);
+      positionVectorCap(startCap, defaults.startEnd, built.startPoint, built.startTangent, defaults.endSize);
     } else {
       positionCap(startCap, built.startPoint);
     }
@@ -803,7 +933,7 @@ async function createConnector(
   if (endCap) {
     endCap.name = "end-cap";
     if (isVectorCap(defaults.endEnd)) {
-      positionArrowCap(endCap, built.endPoint, built.endTangent, defaults.endSize);
+      positionVectorCap(endCap, defaults.endEnd, built.endPoint, built.endTangent, defaults.endSize);
     } else {
       positionCap(endCap, built.endPoint);
     }
@@ -862,7 +992,7 @@ async function rerouteConnection(conn: Connection): Promise<boolean> {
     const cap = await figma.getNodeByIdAsync(conn.startCapId);
     if (cap && "x" in cap) {
       if (isVectorCap(conn.startEnd)) {
-        positionArrowCap(cap as SceneNode, built.startPoint, built.startTangent, conn.endSize);
+        positionVectorCap(cap as SceneNode, conn.startEnd, built.startPoint, built.startTangent, conn.endSize);
       } else {
         positionCap(cap as SceneNode, built.startPoint);
       }
@@ -872,7 +1002,7 @@ async function rerouteConnection(conn: Connection): Promise<boolean> {
     const cap = await figma.getNodeByIdAsync(conn.endCapId);
     if (cap && "x" in cap) {
       if (isVectorCap(conn.endEnd)) {
-        positionArrowCap(cap as SceneNode, built.endPoint, built.endTangent, conn.endSize);
+        positionVectorCap(cap as SceneNode, conn.endEnd, built.endPoint, built.endTangent, conn.endSize);
       } else {
         positionCap(cap as SceneNode, built.endPoint);
       }
@@ -901,9 +1031,10 @@ async function restyleConnection(
     newStyle: EndStyle,
     oldId: string | null
   ): Promise<string | null> {
+    // In-place restyle only applies to the ellipse/rectangle caps. Semi-circle
+    // caps are vectors (capPrimitive "none"), so they fall through to recreate.
     const sameRoundOrSquare =
-      oldStyle !== "none" && oldStyle !== "arrow" &&
-      newStyle !== "none" && newStyle !== "arrow" &&
+      capPrimitive(oldStyle) !== "none" &&
       capPrimitive(oldStyle) === capPrimitive(newStyle);
 
     if (sameRoundOrSquare && oldId) {
