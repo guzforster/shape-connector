@@ -14,6 +14,7 @@ function isEndStyle(v) {
 const PLUGIN_DATA_KEY = "shape-connector-meta";
 const ROOT_CONNECTIONS_KEY = "shape-connector-connections";
 const ROOT_DEFAULTS_KEY = "shape-connector-defaults";
+const ROOT_STYLES_KEY = "shape-connector-styles";
 const DEFAULT_COLOR = { r: 0.4, g: 0.4, b: 0.4 };
 const DEFAULT_WIDTH = 1.5;
 const DEFAULT_END_SIZE = 10;
@@ -70,6 +71,29 @@ function loadDefaults() {
 }
 function saveDefaults(d) {
     figma.root.setPluginData(ROOT_DEFAULTS_KEY, JSON.stringify(d));
+}
+function loadSavedStyles() {
+    const raw = figma.root.getPluginData(ROOT_STYLES_KEY);
+    if (!raw)
+        return [];
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || !Array.isArray(parsed.styles))
+            return [];
+        return parsed.styles;
+    }
+    catch (_a) {
+        return [];
+    }
+}
+function saveSavedStyles(list) {
+    const file = { version: 1, styles: list };
+    figma.root.setPluginData(ROOT_STYLES_KEY, JSON.stringify(file));
+}
+/** Short pseudo-random id for saved styles. The space is small but unique
+ *  enough — collisions would only matter if a user manually edits storage. */
+function newStyleId() {
+    return "s_" + Math.random().toString(36).slice(2, 10);
 }
 function rectFor(node) {
     // absoluteBoundingBox includes rotation/strokes; this is what we want for routing.
@@ -1172,6 +1196,174 @@ async function handleDisconnect() {
             : "Select connector lines to delete them."
     });
 }
+// --- Saved styles -----------------------------------------------------------
+/** Subset of the selection containing only DIRECTLY selected connectors —
+ *  the Save Style button considers attached shapes as ignorable noise per the
+ *  feature spec. */
+function directlySelectedConnectionIds() {
+    const ids = new Set();
+    for (const n of figma.currentPage.selection) {
+        const tag = n.getPluginData(PLUGIN_DATA_KEY);
+        if (tag === "1") {
+            ids.add(n.id);
+        }
+        else if (tag === "child") {
+            let cur = n.parent;
+            while (cur) {
+                if ("getPluginData" in cur && cur.getPluginData(PLUGIN_DATA_KEY) === "1") {
+                    ids.add(cur.id);
+                    break;
+                }
+                cur = cur.parent;
+            }
+        }
+    }
+    return ids;
+}
+/** True iff Save Style should be available right now. */
+function canSaveStyleNow() {
+    const sel = figma.currentPage.selection;
+    if (sel.length === 0)
+        return true;
+    // Anything directly selected that's a connector enables saving its style;
+    // a selection of ONLY non-connectors disables the button.
+    return directlySelectedConnectionIds().size > 0;
+}
+async function extractTextProps(textId) {
+    if (!textId)
+        return null;
+    const node = await figma.getNodeByIdAsync(textId);
+    if (!node || node.type !== "TEXT")
+        return null;
+    const t = node;
+    // Mixed values (font, size, color across different runs) are skipped — we
+    // store style as a single applied set.
+    if (typeof t.fontSize !== "number")
+        return null;
+    if (typeof t.fontName !== "object" || !("family" in t.fontName))
+        return null;
+    const fills = t.fills;
+    let color = null;
+    if (Array.isArray(fills)) {
+        for (const f of fills) {
+            if (f.type === "SOLID") {
+                color = { r: f.color.r, g: f.color.g, b: f.color.b };
+                break;
+            }
+        }
+    }
+    if (!color)
+        return null;
+    return {
+        fontFamily: t.fontName.family,
+        fontStyle: t.fontName.style,
+        fontSize: t.fontSize,
+        color
+    };
+}
+function savedStyleFromConnection(conn, text) {
+    return {
+        id: newStyleId(),
+        style: conn.style,
+        startEnd: conn.startEnd,
+        endEnd: conn.endEnd,
+        color: conn.color,
+        width: conn.width,
+        endSize: conn.endSize,
+        text
+    };
+}
+function savedStyleFromDefaults(d) {
+    return {
+        id: newStyleId(),
+        style: d.style,
+        startEnd: d.startEnd,
+        endEnd: d.endEnd,
+        color: d.color,
+        width: d.width,
+        endSize: d.endSize,
+        text: null
+    };
+}
+async function handleSaveStyle() {
+    const directIds = directlySelectedConnectionIds();
+    const saved = loadSavedStyles();
+    let addedCount = 0;
+    if (directIds.size > 0) {
+        const conns = loadConnections().filter((c) => directIds.has(c.id));
+        for (const conn of conns) {
+            const text = await extractTextProps(conn.labelId);
+            saved.push(savedStyleFromConnection(conn, text));
+            addedCount++;
+        }
+    }
+    else if (figma.currentPage.selection.length === 0) {
+        saved.push(savedStyleFromDefaults(loadDefaults()));
+        addedCount = 1;
+    }
+    else {
+        // Only non-connector items selected — button should have been disabled.
+        figma.ui.postMessage({ type: "status", text: "Select a connector or nothing to save a style." });
+        return;
+    }
+    saveSavedStyles(saved);
+    postStyles();
+    figma.ui.postMessage({
+        type: "status",
+        text: `Saved ${addedCount} style${addedCount === 1 ? "" : "s"}.`
+    });
+}
+async function handleDeleteStyle(id) {
+    const saved = loadSavedStyles().filter((s) => s.id !== id);
+    saveSavedStyles(saved);
+    postStyles();
+}
+/** Apply a saved style. If connectors are in scope (including shape-attached),
+ *  mutate those; otherwise update defaults. Text properties only apply to
+ *  connectors that have an existing label. */
+async function handleApplyStyle(id) {
+    const saved = loadSavedStyles().find((s) => s.id === id);
+    if (!saved)
+        return;
+    const patch = {
+        style: saved.style,
+        startEnd: saved.startEnd,
+        endEnd: saved.endEnd,
+        color: saved.color,
+        width: saved.width,
+        endSize: saved.endSize
+    };
+    const targetIds = selectedConnectionIds();
+    if (targetIds.size > 0) {
+        await applyStyleToSelection(patch);
+        if (saved.text) {
+            await applySavedTextToSelection(saved.text, targetIds);
+        }
+    }
+    else {
+        const cur = loadDefaults();
+        saveDefaults(Object.assign(Object.assign({}, cur), patch));
+    }
+    postSelectionState();
+}
+async function applySavedTextToSelection(text, ids) {
+    const list = loadConnections();
+    await figma.loadFontAsync({ family: text.fontFamily, style: text.fontStyle });
+    for (const conn of list) {
+        if (!ids.has(conn.id) || !conn.labelId)
+            continue;
+        const node = await figma.getNodeByIdAsync(conn.labelId);
+        if (!node || node.type !== "TEXT")
+            continue;
+        const t = node;
+        t.fontName = { family: text.fontFamily, style: text.fontStyle };
+        t.fontSize = text.fontSize;
+        t.fills = [{ type: "SOLID", color: text.color }];
+    }
+}
+function postStyles() {
+    figma.ui.postMessage({ type: "styles", styles: loadSavedStyles() });
+}
 async function handleAddLabel() {
     const targetIds = selectedConnectionIds();
     if (targetIds.size === 0) {
@@ -1306,12 +1498,13 @@ async function applyStyleToSelection(patch) {
  *  (the UI shows a "Mixed" placeholder). */
 function selectionState() {
     const ids = selectedConnectionIds();
+    const canSaveStyle = canSaveStyleNow();
     if (ids.size === 0) {
-        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false };
+        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false, canSaveStyle };
     }
     const list = loadConnections().filter((c) => ids.has(c.id));
     if (list.length === 0) {
-        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false };
+        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false, canSaveStyle };
     }
     const first = list[0];
     let style = first.style;
@@ -1337,7 +1530,7 @@ function selectionState() {
         if (!c.labelId)
             allLabeled = false;
     }
-    return { selectedCount: list.length, style, startEnd, endEnd, color, width, endSize, allLabeled };
+    return { selectedCount: list.length, style, startEnd, endEnd, color, width, endSize, allLabeled, canSaveStyle };
 }
 function postSelectionState() {
     const state = selectionState();
@@ -1350,7 +1543,7 @@ function postSelectionState() {
 }
 // --- Window sizing & docking -----------------------------------------------
 const FULL_W = 260;
-const FULL_H = 480;
+const FULL_H = 560;
 const MINI_W = 180;
 const MINI_H = 36;
 // Margin in canvas-space pixels between the UI and the viewport edge.
@@ -1388,6 +1581,7 @@ function expandUI() {
 figma.showUI(__html__, { width: FULL_W, height: FULL_H, themeColors: true });
 const initialDefaults = loadDefaults();
 figma.ui.postMessage({ type: "defaults", defaults: initialDefaults });
+postStyles();
 postSelectionState();
 // Selectionchange triggers two things: a safety-net reroute (cheap) and a UI
 // state push so the controls reflect the selected connector(s).
@@ -1438,6 +1632,17 @@ figma.ui.onmessage = async (msg) => {
         }
         else if (msg.type === "removeLabel") {
             await handleRemoveLabel();
+        }
+        else if (msg.type === "saveStyle") {
+            await handleSaveStyle();
+        }
+        else if (msg.type === "applyStyle") {
+            if (typeof msg.id === "string")
+                await handleApplyStyle(msg.id);
+        }
+        else if (msg.type === "deleteStyle") {
+            if (typeof msg.id === "string")
+                await handleDeleteStyle(msg.id);
         }
         else if (msg.type === "setStyle") {
             // The UI sends `patch` (style fields the user changed). If any

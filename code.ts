@@ -53,9 +53,33 @@ interface Defaults {
   endSize: number;
 }
 
+/** Text properties captured from a connector's label, used in saved styles. */
+interface TextStyleProps {
+  fontFamily: string;
+  fontStyle: string;
+  fontSize: number;
+  color: RGB;
+}
+
+/** A user-saved snapshot of connector look-and-feel. Stored on the root
+ *  pluginData so styles travel with the file. */
+interface SavedStyle {
+  id: string;
+  style: LineStyle;
+  startEnd: EndStyle;
+  endEnd: EndStyle;
+  color: RGB;
+  width: number;
+  endSize: number;
+  /** If the source connector had a label when the style was saved, capture
+   *  its text properties. Applied later only to targets that have a label. */
+  text: TextStyleProps | null;
+}
+
 const PLUGIN_DATA_KEY = "shape-connector-meta";
 const ROOT_CONNECTIONS_KEY = "shape-connector-connections";
 const ROOT_DEFAULTS_KEY = "shape-connector-defaults";
+const ROOT_STYLES_KEY = "shape-connector-styles";
 
 const DEFAULT_COLOR: RGB = { r: 0.4, g: 0.4, b: 0.4 };
 const DEFAULT_WIDTH = 1.5;
@@ -124,6 +148,34 @@ function loadDefaults(): Defaults {
 
 function saveDefaults(d: Defaults): void {
   figma.root.setPluginData(ROOT_DEFAULTS_KEY, JSON.stringify(d));
+}
+
+interface StoredStyles {
+  version: number;
+  styles: SavedStyle[];
+}
+
+function loadSavedStyles(): SavedStyle[] {
+  const raw = figma.root.getPluginData(ROOT_STYLES_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as StoredStyles;
+    if (!parsed || !Array.isArray(parsed.styles)) return [];
+    return parsed.styles;
+  } catch {
+    return [];
+  }
+}
+
+function saveSavedStyles(list: SavedStyle[]): void {
+  const file: StoredStyles = { version: 1, styles: list };
+  figma.root.setPluginData(ROOT_STYLES_KEY, JSON.stringify(file));
+}
+
+/** Short pseudo-random id for saved styles. The space is small but unique
+ *  enough — collisions would only matter if a user manually edits storage. */
+function newStyleId(): string {
+  return "s_" + Math.random().toString(36).slice(2, 10);
 }
 
 // --- Geometry ---------------------------------------------------------------
@@ -1352,6 +1404,172 @@ async function handleDisconnect(): Promise<void> {
   });
 }
 
+// --- Saved styles -----------------------------------------------------------
+
+/** Subset of the selection containing only DIRECTLY selected connectors —
+ *  the Save Style button considers attached shapes as ignorable noise per the
+ *  feature spec. */
+function directlySelectedConnectionIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const n of figma.currentPage.selection) {
+    const tag = n.getPluginData(PLUGIN_DATA_KEY);
+    if (tag === "1") {
+      ids.add(n.id);
+    } else if (tag === "child") {
+      let cur: BaseNode | null = n.parent;
+      while (cur) {
+        if ("getPluginData" in cur && (cur as SceneNode).getPluginData(PLUGIN_DATA_KEY) === "1") {
+          ids.add(cur.id);
+          break;
+        }
+        cur = cur.parent;
+      }
+    }
+  }
+  return ids;
+}
+
+/** True iff Save Style should be available right now. */
+function canSaveStyleNow(): boolean {
+  const sel = figma.currentPage.selection;
+  if (sel.length === 0) return true;
+  // Anything directly selected that's a connector enables saving its style;
+  // a selection of ONLY non-connectors disables the button.
+  return directlySelectedConnectionIds().size > 0;
+}
+
+async function extractTextProps(textId: string | null): Promise<TextStyleProps | null> {
+  if (!textId) return null;
+  const node = await figma.getNodeByIdAsync(textId);
+  if (!node || node.type !== "TEXT") return null;
+  const t = node as TextNode;
+  // Mixed values (font, size, color across different runs) are skipped — we
+  // store style as a single applied set.
+  if (typeof t.fontSize !== "number") return null;
+  if (typeof t.fontName !== "object" || !("family" in t.fontName)) return null;
+  const fills = t.fills as readonly Paint[];
+  let color: RGB | null = null;
+  if (Array.isArray(fills)) {
+    for (const f of fills) {
+      if (f.type === "SOLID") {
+        color = { r: f.color.r, g: f.color.g, b: f.color.b };
+        break;
+      }
+    }
+  }
+  if (!color) return null;
+  return {
+    fontFamily: t.fontName.family,
+    fontStyle: t.fontName.style,
+    fontSize: t.fontSize,
+    color
+  };
+}
+
+function savedStyleFromConnection(conn: Connection, text: TextStyleProps | null): SavedStyle {
+  return {
+    id: newStyleId(),
+    style: conn.style,
+    startEnd: conn.startEnd,
+    endEnd: conn.endEnd,
+    color: conn.color,
+    width: conn.width,
+    endSize: conn.endSize,
+    text
+  };
+}
+
+function savedStyleFromDefaults(d: Defaults): SavedStyle {
+  return {
+    id: newStyleId(),
+    style: d.style,
+    startEnd: d.startEnd,
+    endEnd: d.endEnd,
+    color: d.color,
+    width: d.width,
+    endSize: d.endSize,
+    text: null
+  };
+}
+
+async function handleSaveStyle(): Promise<void> {
+  const directIds = directlySelectedConnectionIds();
+  const saved = loadSavedStyles();
+  let addedCount = 0;
+  if (directIds.size > 0) {
+    const conns = loadConnections().filter((c) => directIds.has(c.id));
+    for (const conn of conns) {
+      const text = await extractTextProps(conn.labelId);
+      saved.push(savedStyleFromConnection(conn, text));
+      addedCount++;
+    }
+  } else if (figma.currentPage.selection.length === 0) {
+    saved.push(savedStyleFromDefaults(loadDefaults()));
+    addedCount = 1;
+  } else {
+    // Only non-connector items selected — button should have been disabled.
+    figma.ui.postMessage({ type: "status", text: "Select a connector or nothing to save a style." });
+    return;
+  }
+  saveSavedStyles(saved);
+  postStyles();
+  figma.ui.postMessage({
+    type: "status",
+    text: `Saved ${addedCount} style${addedCount === 1 ? "" : "s"}.`
+  });
+}
+
+async function handleDeleteStyle(id: string): Promise<void> {
+  const saved = loadSavedStyles().filter((s) => s.id !== id);
+  saveSavedStyles(saved);
+  postStyles();
+}
+
+/** Apply a saved style. If connectors are in scope (including shape-attached),
+ *  mutate those; otherwise update defaults. Text properties only apply to
+ *  connectors that have an existing label. */
+async function handleApplyStyle(id: string): Promise<void> {
+  const saved = loadSavedStyles().find((s) => s.id === id);
+  if (!saved) return;
+  const patch: Partial<Pick<Connection, "style" | "startEnd" | "endEnd" | "color" | "width" | "endSize">> = {
+    style: saved.style,
+    startEnd: saved.startEnd,
+    endEnd: saved.endEnd,
+    color: saved.color,
+    width: saved.width,
+    endSize: saved.endSize
+  };
+  const targetIds = selectedConnectionIds();
+  if (targetIds.size > 0) {
+    await applyStyleToSelection(patch);
+    if (saved.text) {
+      await applySavedTextToSelection(saved.text, targetIds);
+    }
+  } else {
+    const cur = loadDefaults();
+    saveDefaults({ ...cur, ...patch });
+  }
+  postSelectionState();
+}
+
+async function applySavedTextToSelection(text: TextStyleProps, ids: Set<string>): Promise<void> {
+  const list = loadConnections();
+  await figma.loadFontAsync({ family: text.fontFamily, style: text.fontStyle });
+  for (const conn of list) {
+    if (!ids.has(conn.id) || !conn.labelId) continue;
+    const node = await figma.getNodeByIdAsync(conn.labelId);
+    if (!node || node.type !== "TEXT") continue;
+    const t = node as TextNode;
+    t.fontName = { family: text.fontFamily, style: text.fontStyle };
+    t.fontSize = text.fontSize;
+    t.fills = [{ type: "SOLID", color: text.color }];
+  }
+}
+
+function postStyles(): void {
+  figma.ui.postMessage({ type: "styles", styles: loadSavedStyles() });
+}
+
 async function handleAddLabel(): Promise<void> {
   const targetIds = selectedConnectionIds();
   if (targetIds.size === 0) {
@@ -1486,14 +1704,16 @@ function selectionState(): {
   width: number | null;
   endSize: number | null;
   allLabeled: boolean;
+  canSaveStyle: boolean;
 } {
   const ids = selectedConnectionIds();
+  const canSaveStyle = canSaveStyleNow();
   if (ids.size === 0) {
-    return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false };
+    return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false, canSaveStyle };
   }
   const list = loadConnections().filter((c) => ids.has(c.id));
   if (list.length === 0) {
-    return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false };
+    return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false, canSaveStyle };
   }
   const first = list[0];
   let style: LineStyle | null = first.style;
@@ -1512,7 +1732,7 @@ function selectionState(): {
     if (c.endSize !== endSize) endSize = null;
     if (!c.labelId) allLabeled = false;
   }
-  return { selectedCount: list.length, style, startEnd, endEnd, color, width, endSize, allLabeled };
+  return { selectedCount: list.length, style, startEnd, endEnd, color, width, endSize, allLabeled, canSaveStyle };
 }
 
 function postSelectionState(): void {
@@ -1528,7 +1748,7 @@ function postSelectionState(): void {
 // --- Window sizing & docking -----------------------------------------------
 
 const FULL_W = 260;
-const FULL_H = 480;
+const FULL_H = 560;
 const MINI_W = 180;
 const MINI_H = 36;
 // Margin in canvas-space pixels between the UI and the viewport edge.
@@ -1573,6 +1793,7 @@ figma.showUI(__html__, { width: FULL_W, height: FULL_H, themeColors: true });
 
 const initialDefaults = loadDefaults();
 figma.ui.postMessage({ type: "defaults", defaults: initialDefaults });
+postStyles();
 postSelectionState();
 
 // Selectionchange triggers two things: a safety-net reroute (cheap) and a UI
@@ -1620,6 +1841,12 @@ figma.ui.onmessage = async (msg) => {
       await handleAddLabel();
     } else if (msg.type === "removeLabel") {
       await handleRemoveLabel();
+    } else if (msg.type === "saveStyle") {
+      await handleSaveStyle();
+    } else if (msg.type === "applyStyle") {
+      if (typeof msg.id === "string") await handleApplyStyle(msg.id);
+    } else if (msg.type === "deleteStyle") {
+      if (typeof msg.id === "string") await handleDeleteStyle(msg.id);
     } else if (msg.type === "setStyle") {
       // The UI sends `patch` (style fields the user changed). If any
       // connectors are selected, we apply the patch to them. Otherwise we

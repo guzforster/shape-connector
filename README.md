@@ -1,6 +1,6 @@
 # Shape Connector
 
-> **Beta — v0.2.0.** This plugin is in active development. Expect rough edges, breaking changes between versions, and the occasional bug. Feedback and issue reports are very welcome.
+> **Beta — v0.3.0.** This plugin is in active development. Expect rough edges, breaking changes between versions, and the occasional bug. Feedback and issue reports are very welcome.
 
 A Figma plugin that connects any shape to any other shape with a line that stays attached when you move the shapes.
 
@@ -11,13 +11,15 @@ A Figma plugin that connects any shape to any other shape with a line that stays
 ## Features
 
 - **Connect any shape** — select two or more shapes and click **Connect**. Connectors are drawn as a chain: `A → B → C → …`.
-- **Lines that follow** — connectors auto-reroute as you drag shapes around, and snap into final position the moment you release.
+- **Lines that follow** — connectors auto-reroute as you drag shapes around and snap into final position the moment you release.
 - **Three line styles** — Orthogonal (right-angle), Curved (S-bezier), or Straight.
 - **Eight endpoint shapes per end** — None, Arrow, Filled/Hollow circle, Filled/Hollow square, Filled/Hollow semi-circle. Source and target are configured independently.
 - **Per-connector styling** — color, line width (0.5–20 px), endpoint size (4–60 px). All controls work on a single selected connector or a multi-selection.
-- **Editing existing connectors** — select any connector on the canvas; the panel switches into "Editing N connectors" mode and any control change applies to the selection.
-- **Minimize to corner** — collapse the UI to a slim strip docked at the bottom-right of the viewport, so the plugin can keep running and gets out of your way while you work.
-- **Persistent across sessions** — connections are stored in the file (`figma.root.pluginData`), so they survive plugin reload and reopening the file.
+- **Labels** — add a text label to any connector. The label tracks the line's midpoint and rides a white pill so the line behind it stays readable. Use Figma's native text panel to change font, size, weight, or color. Empty the label's text to delete it.
+- **Saved styles** — capture a connector's full look (line + endpoints + color + width + text properties if labeled) as a reusable preset, then apply it back with one click. Each preset shows up as a small SVG thumbnail. Right-corner × deletes.
+- **Editing existing connectors** — select any connector and the panel switches into "Editing N connectors" mode. Any control change applies to the selection. Selecting a *shape* puts every connector attached to it in scope too, so you can restyle every line touching a node in one move.
+- **Minimize to corner** — collapse the UI to a slim strip docked at the bottom-right of the viewport, so the plugin keeps running while you work.
+- **Persistent across sessions** — connections and saved styles live in the file (`figma.root.pluginData`), so everything survives plugin reload and reopening.
 
 ## Install
 
@@ -44,16 +46,42 @@ Then in Figma desktop:
 
 ## Use
 
+### Connect shapes
+
 1. Open any Figma Design file and run the plugin.
 2. Select **two or more shapes** on the canvas.
-3. (Optional) Pick a line style, endpoint shapes, color, line width, and endpoint size in the panel.
+3. (Optional) Pick a line style, endpoint shapes, color, line width, and end size in the panel.
 4. Click **Connect selected shapes**.
 
-To **edit** a connector after creating it: click the connector group on the canvas. The panel header switches to "Editing x connector(s)" and reflects its current style. Change any control to apply the new style in place.
+### Edit a connector
 
-To **delete** a connector: select it and click **Delete selected connectors**.
+Click a connector on the canvas — the panel header switches to **"Editing 1 connector"** and the controls reflect its current style. Change any control to apply the new style in place. To restyle multiple connectors at once, select any combination of connectors *or* shapes that connect to them.
 
-To **minimize**: click the `_` button at the top-right of the panel. It collapses to a thin strip in the bottom-right corner and keeps running in the background (necessary to keep the connectors updating as you move the shapes).
+### Add and remove labels
+
+With a connector (or shape with attached connectors) selected, click **Add label**. A "Label" text appears at the line's midpoint with a white pill behind it. Double-click into the group to edit the text using Figma's native text controls. Empty the text and click off — the label and pill are removed automatically.
+
+The button doubles as **Remove label** when every selected connector already has one.
+
+### Save and reuse styles
+
+Use the **Styles** section to save and apply presets:
+
+- Click **+** with nothing selected → saves the current control values as a preset.
+- Click **+** with a connector selected → saves that connector's exact style (including its label's font/size/color, if any).
+- Click **+** with multiple connectors selected → saves one preset per connector.
+- Click an existing preset to apply it to whatever is in scope (or to set as the defaults for the next Connect, if nothing is selected).
+- Hover a preset and click **×** to delete it.
+
+The preset thumbnail mirrors the saved line style — diagonal for straight, an L-shape for orthogonal, an S-curve for curved.
+
+### Delete a connector
+
+Select it and click **Delete selected connectors**.
+
+### Minimize
+
+Click the **_** button at the top-right of the panel. It collapses to a thin strip in the bottom-right corner and keeps running in the background — necessary so the connectors keep tracking the shapes you move.
 
 ## Project layout
 
@@ -79,9 +107,10 @@ Reload the plugin in Figma after each rebuild — either re-run it from the Plug
 
 ## Roadmap
 
-- [ ] Labels on connectors (text along or beside the line)
-- [ ] Multiple routing flavours for orthogonal (e.g. avoid other shapes)
+- [ ] Per-end arrow style variants (filled vs. outlined triangles)
 - [ ] Dashed/dotted stroke styles
+- [ ] Smarter orthogonal routing that avoids other shapes
+- [ ] "Connect all-pairs" mode in addition to the current chain
 
 ## Contributing
 

@@ -165,6 +165,70 @@
     font-style: italic;
   }
 
+  /* --- Saved styles section --------------------------------------------- */
+  .styles-section {
+    margin: 10px 0 6px;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+  }
+  .styles-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .styles-label {
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .styles-gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 38px;
+    align-content: flex-start;
+  }
+  .styles-gallery .empty {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 36px;
+  }
+  .style-tile {
+    position: relative;
+    width: 56px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    overflow: hidden;
+    background: var(--bg);
+    padding: 0;
+    margin: 0;
+  }
+  .style-tile:hover { border-color: var(--accent); }
+  .style-tile svg { display: block; width: 100%; height: 100%; pointer-events: none; }
+  .style-tile .style-delete {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: none;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 11px;
+    line-height: 14px;
+    text-align: center;
+    cursor: pointer;
+    border-bottom-left-radius: 4px;
+    display: none;
+  }
+  .style-tile:hover .style-delete { display: block; }
+
   #mini {
     display: none;
     height: 100%;
@@ -264,6 +328,14 @@
       </div>
     </div>
 
+    <div class="styles-section">
+      <div class="styles-header">
+        <span class="styles-label">Styles</span>
+        <button id="saveStyle" class="icon-btn" title="Save current style" disabled>+</button>
+      </div>
+      <div id="stylesGallery" class="styles-gallery"></div>
+    </div>
+
     <button id="connect" class="action primary">Connect selected shapes</button>
 
     <hr />
@@ -274,9 +346,7 @@
     <div id="status"></div>
 
     <div class="hint">
-      Select 2+ shapes to connect them. Select existing connectors to edit
-      their style — controls show "Editing N connector(s)" when applicable.
-      Empty a label's text to remove it.
+      Select 2+ shapes to connect them.
     </div>
   </div>
 
@@ -465,6 +535,7 @@
     const action = $("addLabel").dataset.action || "addLabel";
     send(action);
   });
+  $("saveStyle").addEventListener("click", () => send("saveStyle"));
 
   $("minimize").addEventListener("click", () => {
     document.body.classList.add("minimized");
@@ -506,9 +577,148 @@
         setPairValue("widthRange", "widthInput", msg.width);
         setPairValue("endSizeRange", "endSizeInput", msg.endSize);
       }
+      // Save style is allowed when at least one connector is in scope OR the
+      // selection is empty (then we capture the current control values).
+      $("saveStyle").disabled = !msg.canSaveStyle;
       suppressChange = false;
+      return;
+    }
+    if (msg.type === "styles") {
+      renderStylesGallery(msg.styles || []);
+      return;
     }
   });
+
+  // --- Saved styles rendering --------------------------------------------
+  function renderStylesGallery(styles) {
+    const gallery = $("stylesGallery");
+    gallery.innerHTML = "";
+    if (!styles.length) {
+      const empty = document.createElement("span");
+      empty.className = "empty";
+      empty.textContent = "Click + to save a style";
+      gallery.appendChild(empty);
+      return;
+    }
+    for (const style of styles) {
+      const tile = document.createElement("button");
+      tile.className = "style-tile";
+      tile.title = "Apply style";
+      tile.dataset.styleId = style.id;
+      tile.innerHTML = renderThumbnailSVG(style);
+      const del = document.createElement("button");
+      del.className = "style-delete";
+      del.title = "Delete style";
+      del.textContent = "×"; // ×
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        send("deleteStyle", { id: style.id });
+      });
+      tile.appendChild(del);
+      tile.addEventListener("click", () => send("applyStyle", { id: style.id }));
+      gallery.appendChild(tile);
+    }
+  }
+
+  function renderThumbnailSVG(style) {
+    const W = 56, H = 36;
+    const colorHex = rgb01ToHex(style.color);
+    const strokeWidth = Math.max(0.8, Math.min(3, style.width * 0.6));
+    const capSize = Math.max(4, Math.min(10, style.endSize * 0.4));
+
+    // Diagonal endpoints across the tile so the LINE between them visibly
+    // differs per style: a diagonal for straight, an L-shape for orthogonal,
+    // and an S-curve for curved.
+    const p1 = { x: 10, y: 24 };
+    const p2 = { x: 46, y: 12 };
+
+    const startInset = insetForCap(style.startEnd, capSize);
+    const endInset   = insetForCap(style.endEnd, capSize);
+
+    // Line-direction-aware endpoint positions (where the line meets the cap).
+    let p1L, p2L, pathD;
+    if (style.style === "straight") {
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      const ux = dx / len, uy = dy / len;
+      p1L = { x: p1.x + startInset * ux, y: p1.y + startInset * uy };
+      p2L = { x: p2.x - endInset   * ux, y: p2.y - endInset   * uy };
+      pathD = `M ${p1L.x} ${p1L.y} L ${p2L.x} ${p2L.y}`;
+    } else if (style.style === "orthogonal") {
+      // Exits and enters horizontally. The elbow is at (midX, p1.y) -> (midX, p2.y).
+      p1L = { x: p1.x + startInset, y: p1.y };
+      p2L = { x: p2.x - endInset,   y: p2.y };
+      const midX = (p1L.x + p2L.x) / 2;
+      pathD = `M ${p1L.x} ${p1L.y} L ${midX} ${p1L.y} L ${midX} ${p2L.y} L ${p2L.x} ${p2L.y}`;
+    } else {
+      // curved
+      p1L = { x: p1.x + startInset, y: p1.y };
+      p2L = { x: p2.x - endInset,   y: p2.y };
+      const cOff = Math.max(8, (p2L.x - p1L.x) / 2);
+      const c1 = { x: p1L.x + cOff, y: p1L.y };
+      const c2 = { x: p2L.x - cOff, y: p2L.y };
+      pathD = `M ${p1L.x} ${p1L.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p2L.x} ${p2L.y}`;
+    }
+
+    // For straight, rotate the caps so their flat backs are perpendicular to
+    // the diagonal line. For orthogonal/curved the line exits horizontally at
+    // both endpoints so the default (horizontal) cap orientation already
+    // matches.
+    let capAngle = 0;
+    if (style.style === "straight") {
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      capAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    }
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+    svg += `<path d="${pathD}" stroke="${colorHex}" stroke-width="${strokeWidth}" stroke-linecap="round" fill="none" />`;
+    svg += `<g transform="rotate(${capAngle}, ${p1.x}, ${p1.y})">`;
+    svg += renderCapSVG(style.startEnd, p1.x, p1.y, capSize, colorHex, style.width, "start");
+    svg += `</g>`;
+    svg += `<g transform="rotate(${capAngle}, ${p2.x}, ${p2.y})">`;
+    svg += renderCapSVG(style.endEnd, p2.x, p2.y, capSize, colorHex, style.width, "end");
+    svg += `</g>`;
+    svg += `</svg>`;
+    return svg;
+  }
+
+  function insetForCap(endStyle, capSize) {
+    if (endStyle === "arrow") return capSize;
+    if (endStyle === "semi-circle" || endStyle === "semi-circle-hollow") return capSize / 2;
+    return 0;
+  }
+
+  function renderCapSVG(endStyle, x, y, size, color, width, which) {
+    if (endStyle === "none") return "";
+    const sw = Math.max(0.6, Math.min(1.5, width * 0.4));
+    if (endStyle === "arrow") {
+      const tipX = x;
+      const baseX = which === "start" ? x + size : x - size;
+      return `<polygon points="${tipX},${y} ${baseX},${y - size/2} ${baseX},${y + size/2}" fill="${color}" />`;
+    }
+    if (endStyle === "circle") {
+      return `<circle cx="${x}" cy="${y}" r="${size/2}" fill="${color}" />`;
+    }
+    if (endStyle === "circle-hollow") {
+      return `<circle cx="${x}" cy="${y}" r="${size/2}" fill="none" stroke="${color}" stroke-width="${sw}" />`;
+    }
+    if (endStyle === "square") {
+      return `<rect x="${x - size/2}" y="${y - size/2}" width="${size}" height="${size}" fill="${color}" />`;
+    }
+    if (endStyle === "square-hollow") {
+      return `<rect x="${x - size/2}" y="${y - size/2}" width="${size}" height="${size}" fill="none" stroke="${color}" stroke-width="${sw}" />`;
+    }
+    if (endStyle === "semi-circle" || endStyle === "semi-circle-hollow") {
+      const r = size / 2;
+      // Sweep flag chooses bulge direction. For "start" the dome bulges left
+      // (sweep=0); for "end" it bulges right (sweep=1).
+      const sweep = which === "start" ? 0 : 1;
+      const fill = endStyle === "semi-circle" ? color : "none";
+      const stroke = endStyle === "semi-circle-hollow" ? `stroke="${color}" stroke-width="${sw}"` : "";
+      return `<path d="M ${x} ${y - r} A ${r} ${r} 0 0 ${sweep} ${x} ${y + r} Z" fill="${fill}" ${stroke} />`;
+    }
+    return "";
+  }
 </script>
 </body>
 </html>
