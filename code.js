@@ -1022,12 +1022,15 @@ function isOurNode(n) {
  *  walking up to the group. */
 function selectedConnectionIds() {
     const ids = new Set();
+    const shapeIds = new Set();
     for (const n of figma.currentPage.selection) {
         const tag = n.getPluginData(PLUGIN_DATA_KEY);
         if (tag === "1") {
+            // Connector group selected directly.
             ids.add(n.id);
         }
         else if (tag === "child") {
+            // A child of a connector group (line or cap) — walk up to its group.
             let cur = n.parent;
             while (cur) {
                 if ("getPluginData" in cur && cur.getPluginData(PLUGIN_DATA_KEY) === "1") {
@@ -1035,6 +1038,18 @@ function selectedConnectionIds() {
                     break;
                 }
                 cur = cur.parent;
+            }
+        }
+        else {
+            // Regular shape — bring any connectors attached to it into scope so
+            // editing the controls updates the lines wired to this shape.
+            shapeIds.add(n.id);
+        }
+    }
+    if (shapeIds.size > 0) {
+        for (const conn of loadConnections()) {
+            if (shapeIds.has(conn.source) || shapeIds.has(conn.target)) {
+                ids.add(conn.id);
             }
         }
     }
@@ -1080,10 +1095,6 @@ async function handleDisconnect() {
             ? `Removed ${removed} connector${removed === 1 ? "" : "s"}.`
             : "Select connector lines to delete them."
     });
-}
-async function handleRefresh() {
-    const n = await rerouteAll();
-    figma.ui.postMessage({ type: "status", text: `Refreshed ${n} connector${n === 1 ? "" : "s"}.` });
 }
 /** Apply a style patch to currently-selected connectors. Returns the number
  *  of connectors mutated. */
@@ -1152,7 +1163,7 @@ function postSelectionState() {
 }
 // --- Window sizing & docking -----------------------------------------------
 const FULL_W = 260;
-const FULL_H = 380;
+const FULL_H = 440;
 const MINI_W = 180;
 const MINI_H = 36;
 // Margin in canvas-space pixels between the UI and the viewport edge.
@@ -1225,9 +1236,6 @@ figma.ui.onmessage = async (msg) => {
         if (msg.type === "connect") {
             const cur = loadDefaults();
             await handleConnect(cur);
-        }
-        else if (msg.type === "refresh") {
-            await handleRefresh();
         }
         else if (msg.type === "disconnect") {
             await handleDisconnect();
