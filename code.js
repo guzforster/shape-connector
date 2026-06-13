@@ -35,7 +35,7 @@ function loadConnections() {
         if (file.version !== SCHEMA_VERSION)
             return [];
         // Backfill fields added since v2 was introduced.
-        return (file.connections || []).map((c) => (Object.assign(Object.assign({}, c), { endSize: typeof c.endSize === "number" ? c.endSize : DEFAULT_END_SIZE })));
+        return (file.connections || []).map((c) => (Object.assign(Object.assign({}, c), { endSize: typeof c.endSize === "number" ? c.endSize : DEFAULT_END_SIZE, labelId: typeof c.labelId === "string" ? c.labelId : null, labelBgId: typeof c.labelBgId === "string" ? c.labelBgId : null })));
     }
     catch (_a) {
         return [];
@@ -355,7 +355,8 @@ function finalize(spec) {
         startPoint: spec.startPoint,
         endPoint: spec.endPoint,
         startTangent: spec.startTangent,
-        endTangent: spec.endTangent
+        endTangent: spec.endTangent,
+        midPoint: spec.midPoint
     };
 }
 function fmt(p, o) {
@@ -411,7 +412,8 @@ function buildStraightPath(srcNode, tgtNode, startInset, endInset) {
         startPoint: paFull,
         endPoint: pbFull,
         startTangent,
-        endTangent
+        endTangent,
+        midPoint: { x: (paLine.x + pbLine.x) / 2, y: (paLine.y + pbLine.y) / 2 }
     });
 }
 function sideInwardTangent(side) {
@@ -522,7 +524,10 @@ function buildOrthogonalPath(srcNode, tgtNode, startInset, endInset) {
         startPoint: paFull,
         endPoint: pbFull,
         startTangent,
-        endTangent
+        endTangent,
+        // The orthogonal route has a horizontal-vertical-horizontal (or v-h-v)
+        // shape; its visual midpoint is the middle of the elbow segment v2→v3.
+        midPoint: { x: (v2.x + v3.x) / 2, y: (v2.y + v3.y) / 2 }
     });
 }
 /** Sample the t-values where a cubic bezier reaches an extremum in either x
@@ -597,7 +602,8 @@ function buildCurvedPath(srcNode, tgtNode, startInset, endInset) {
         startPoint: paFull,
         endPoint: pbFull,
         startTangent,
-        endTangent
+        endTangent,
+        midPoint: cubicAt(paLine, c1, c2, pbLine, 0.5)
     });
 }
 function insetFor(style, endSize) {
@@ -749,6 +755,62 @@ function positionVectorCap(cap, style, anchor, inward, size) {
         positionArrowCap(cap, anchor, inward, size);
     }
 }
+// --- Labels -----------------------------------------------------------------
+const LABEL_FONT = { family: "Inter", style: "Regular" };
+const LABEL_INITIAL = "Label";
+const LABEL_DEFAULT_SIZE = 12;
+// Pill padding around the text bbox + corner radius.
+const LABEL_PILL_PAD_X = 6;
+const LABEL_PILL_PAD_Y = 3;
+const LABEL_PILL_RADIUS = 4;
+let labelFontPromise = null;
+function ensureLabelFont() {
+    if (!labelFontPromise)
+        labelFontPromise = figma.loadFontAsync(LABEL_FONT);
+    return labelFontPromise;
+}
+/** Place the text so its bbox center sits at `mid`. */
+function positionLabel(label, mid) {
+    label.x = mid.x - label.width / 2;
+    label.y = mid.y - label.height / 2;
+}
+/** Resize the pill rect to wrap the current text bbox + padding, centered on
+ *  the same midpoint as the text. */
+function positionLabelPill(pill, label, mid) {
+    const w = label.width + LABEL_PILL_PAD_X * 2;
+    const h = label.height + LABEL_PILL_PAD_Y * 2;
+    pill.resize(Math.max(w, 1), Math.max(h, 1));
+    pill.x = mid.x - w / 2;
+    pill.y = mid.y - h / 2;
+}
+async function createLabelForConnection(conn) {
+    const group = await figma.getNodeByIdAsync(conn.id);
+    if (!group || group.type !== "GROUP")
+        return null;
+    await ensureLabelFont();
+    // Pill (background) is a sibling of the text inside the group. We add the
+    // pill FIRST so it sits below the text in z-order — clicking the label on
+    // canvas selects the text, and the line behind the pill is hidden by the
+    // white fill.
+    const pill = figma.createRectangle();
+    pill.name = "label-bg";
+    pill.cornerRadius = LABEL_PILL_RADIUS;
+    pill.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+    pill.strokes = [];
+    pill.setPluginData(PLUGIN_DATA_KEY, "child");
+    group.appendChild(pill);
+    const label = figma.createText();
+    label.name = "label";
+    label.fontName = LABEL_FONT;
+    label.fontSize = LABEL_DEFAULT_SIZE;
+    label.characters = LABEL_INITIAL;
+    // Black on canvas — readable on most backgrounds; user can recolor via
+    // Figma's native text panel after selecting.
+    label.fills = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }];
+    label.setPluginData(PLUGIN_DATA_KEY, "child");
+    group.appendChild(label);
+    return { labelId: label.id, bgId: pill.id };
+}
 async function paintLine(line, built, color, width) {
     line.vectorPaths = [{ windingRule: "NONE", data: built.data }];
     line.x = built.origin.x;
@@ -810,6 +872,8 @@ async function createConnector(source, target, defaults) {
         lineId: line.id,
         startCapId: startCap ? startCap.id : null,
         endCapId: endCap ? endCap.id : null,
+        labelId: null,
+        labelBgId: null,
         source: source.id,
         target: target.id,
         style: defaults.style,
@@ -854,6 +918,18 @@ async function rerouteConnection(conn) {
             }
             else {
                 positionCap(cap, built.endPoint);
+            }
+        }
+    }
+    if (conn.labelId) {
+        const label = await figma.getNodeByIdAsync(conn.labelId);
+        if (label && label.type === "TEXT") {
+            positionLabel(label, built.midPoint);
+            if (conn.labelBgId) {
+                const pill = await figma.getNodeByIdAsync(conn.labelBgId);
+                if (pill && pill.type === "RECTANGLE") {
+                    positionLabelPill(pill, label, built.midPoint);
+                }
             }
         }
     }
@@ -1096,6 +1172,114 @@ async function handleDisconnect() {
             : "Select connector lines to delete them."
     });
 }
+async function handleAddLabel() {
+    const targetIds = selectedConnectionIds();
+    if (targetIds.size === 0) {
+        figma.ui.postMessage({ type: "status", text: "Select a connector to label." });
+        return;
+    }
+    const list = loadConnections();
+    let added = 0;
+    let alreadyLabeled = 0;
+    for (let i = 0; i < list.length; i++) {
+        if (!targetIds.has(list[i].id))
+            continue;
+        if (list[i].labelId) {
+            const existing = await figma.getNodeByIdAsync(list[i].labelId);
+            if (existing && existing.type === "TEXT") {
+                alreadyLabeled++;
+                continue;
+            }
+        }
+        const created = await createLabelForConnection(list[i]);
+        if (!created)
+            continue;
+        list[i] = Object.assign(Object.assign({}, list[i]), { labelId: created.labelId, labelBgId: created.bgId });
+        // rerouteConnection recomputes the midpoint and places both text and pill.
+        await rerouteConnection(list[i]);
+        added++;
+    }
+    if (added > 0)
+        saveConnections(list);
+    figma.ui.postMessage({
+        type: "status",
+        text: added > 0
+            ? `Added label to ${added} connector${added === 1 ? "" : "s"}.`
+            : alreadyLabeled > 0
+                ? "Already labeled — edit the text on canvas."
+                : "No labels added."
+    });
+    // The button's add/remove state depends on whether all selected connectors
+    // have a label — re-push selection state so the UI flips without waiting
+    // for the next selectionchange.
+    postSelectionState();
+}
+async function handleRemoveLabel() {
+    const targetIds = selectedConnectionIds();
+    if (targetIds.size === 0) {
+        figma.ui.postMessage({ type: "status", text: "Select a connector first." });
+        return;
+    }
+    const list = loadConnections();
+    let removed = 0;
+    for (let i = 0; i < list.length; i++) {
+        if (!targetIds.has(list[i].id))
+            continue;
+        const labelId = list[i].labelId;
+        const bgId = list[i].labelBgId;
+        if (!labelId && !bgId)
+            continue;
+        if (labelId) {
+            const node = await figma.getNodeByIdAsync(labelId);
+            if (node)
+                node.remove();
+        }
+        if (bgId) {
+            const pill = await figma.getNodeByIdAsync(bgId);
+            if (pill)
+                pill.remove();
+        }
+        list[i] = Object.assign(Object.assign({}, list[i]), { labelId: null, labelBgId: null });
+        removed++;
+    }
+    if (removed > 0)
+        saveConnections(list);
+    figma.ui.postMessage({
+        type: "status",
+        text: removed > 0 ? `Removed label from ${removed} connector${removed === 1 ? "" : "s"}.` : "No labels to remove."
+    });
+    postSelectionState();
+}
+/** Remove labels whose text is empty. Returns the number of connections
+ *  mutated so the caller knows whether to persist. */
+async function cleanupEmptyLabels() {
+    const list = loadConnections();
+    let mutated = 0;
+    for (let i = 0; i < list.length; i++) {
+        const labelId = list[i].labelId;
+        const bgId = list[i].labelBgId;
+        if (!labelId && !bgId)
+            continue;
+        const labelNode = labelId ? await figma.getNodeByIdAsync(labelId) : null;
+        const isTextLive = labelNode && labelNode.type === "TEXT";
+        const isEmpty = isTextLive && labelNode.characters.length === 0;
+        if (!labelNode || !isTextLive || isEmpty) {
+            // Remove pill alongside the text whenever the label is dead or empty.
+            if (isTextLive && isEmpty)
+                labelNode.remove();
+            if (bgId) {
+                const pill = await figma.getNodeByIdAsync(bgId);
+                if (pill)
+                    pill.remove();
+            }
+            list[i] = Object.assign(Object.assign({}, list[i]), { labelId: null, labelBgId: null });
+            mutated++;
+        }
+    }
+    if (mutated > 0)
+        saveConnections(list);
+    return mutated;
+}
 /** Apply a style patch to currently-selected connectors. Returns the number
  *  of connectors mutated. */
 async function applyStyleToSelection(patch) {
@@ -1123,11 +1307,11 @@ async function applyStyleToSelection(patch) {
 function selectionState() {
     const ids = selectedConnectionIds();
     if (ids.size === 0) {
-        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null };
+        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false };
     }
     const list = loadConnections().filter((c) => ids.has(c.id));
     if (list.length === 0) {
-        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null };
+        return { selectedCount: 0, style: null, startEnd: null, endEnd: null, color: null, width: null, endSize: null, allLabeled: false };
     }
     const first = list[0];
     let style = first.style;
@@ -1136,6 +1320,7 @@ function selectionState() {
     let color = first.color;
     let width = first.width;
     let endSize = first.endSize;
+    let allLabeled = true;
     for (const c of list) {
         if (c.style !== style)
             style = null;
@@ -1149,8 +1334,10 @@ function selectionState() {
             width = null;
         if (c.endSize !== endSize)
             endSize = null;
+        if (!c.labelId)
+            allLabeled = false;
     }
-    return { selectedCount: list.length, style, startEnd, endEnd, color, width, endSize };
+    return { selectedCount: list.length, style, startEnd, endEnd, color, width, endSize, allLabeled };
 }
 function postSelectionState() {
     const state = selectionState();
@@ -1163,7 +1350,7 @@ function postSelectionState() {
 }
 // --- Window sizing & docking -----------------------------------------------
 const FULL_W = 260;
-const FULL_H = 440;
+const FULL_H = 480;
 const MINI_W = 180;
 const MINI_H = 36;
 // Margin in canvas-space pixels between the UI and the viewport edge.
@@ -1205,7 +1392,13 @@ postSelectionState();
 // Selectionchange triggers two things: a safety-net reroute (cheap) and a UI
 // state push so the controls reflect the selected connector(s).
 figma.on("selectionchange", () => {
-    rerouteAll().catch((err) => console.error("reroute failed", err));
+    // selectionchange is a natural moment to garbage-collect labels the user
+    // emptied (we can't catch the edit-finish event directly). Cleanup first,
+    // then a global reroute as a safety net for stuff the poll loop missed.
+    (async () => {
+        await cleanupEmptyLabels();
+        await rerouteAll();
+    })().catch((err) => console.error("selectionchange tasks failed", err));
     postSelectionState();
 });
 const pollHandle = setInterval(() => {
@@ -1239,6 +1432,12 @@ figma.ui.onmessage = async (msg) => {
         }
         else if (msg.type === "disconnect") {
             await handleDisconnect();
+        }
+        else if (msg.type === "addLabel") {
+            await handleAddLabel();
+        }
+        else if (msg.type === "removeLabel") {
+            await handleRemoveLabel();
         }
         else if (msg.type === "setStyle") {
             // The UI sends `patch` (style fields the user changed). If any

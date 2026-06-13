@@ -268,6 +268,7 @@
 
     <hr />
 
+    <button id="addLabel" class="action" disabled>Add label</button>
     <button id="disconnect" class="action danger" disabled>Delete selected connectors</button>
 
     <div id="status"></div>
@@ -275,6 +276,7 @@
     <div class="hint">
       Select 2+ shapes to connect them. Select existing connectors to edit
       their style — controls show "Editing N connector(s)" when applicable.
+      Empty a label's text to remove it.
     </div>
   </div>
 
@@ -412,7 +414,7 @@
     }
   }
 
-  function updateScopeBadge(selectedCount) {
+  function updateScopeBadge(selectedCount, allLabeled) {
     const badge = $("scope");
     if (selectedCount > 0) {
       badge.textContent = `Editing ${selectedCount} connector${selectedCount === 1 ? "" : "s"}`;
@@ -421,8 +423,20 @@
       badge.textContent = "Defaults for next connect";
       badge.classList.remove("editing");
     }
-    // Delete is only meaningful when at least one connector is selected.
+    // Delete and label buttons only matter when at least one connector is in scope.
     $("disconnect").disabled = selectedCount === 0;
+    const labelBtn = $("addLabel");
+    labelBtn.disabled = selectedCount === 0;
+    // Toggle add vs. remove based on whether every selected connector has a
+    // label already. Mixed and none-labeled both fall back to "Add label" so
+    // the action covers the most common case (add to anything missing one).
+    if (allLabeled) {
+      labelBtn.textContent = "Remove label";
+      labelBtn.dataset.action = "removeLabel";
+    } else {
+      labelBtn.textContent = "Add label";
+      labelBtn.dataset.action = "addLabel";
+    }
   }
 
   // --- Wire up controls ---------------------------------------------------
@@ -444,6 +458,13 @@
 
   $("connect").addEventListener("click", () => send("connect"));
   $("disconnect").addEventListener("click", () => send("disconnect"));
+  // The label button doubles as add OR remove depending on the selection
+  // state. We stash the intent in dataset.action so the click handler can
+  // dispatch the correct message.
+  $("addLabel").addEventListener("click", () => {
+    const action = $("addLabel").dataset.action || "addLabel";
+    send(action);
+  });
 
   $("minimize").addEventListener("click", () => {
     document.body.classList.add("minimized");
@@ -476,7 +497,7 @@
     }
     if (msg.type === "selection") {
       suppressChange = true;
-      updateScopeBadge(msg.selectedCount || 0);
+      updateScopeBadge(msg.selectedCount || 0, !!msg.allLabeled);
       if (msg.selectedCount > 0) {
         setSelectValue($("style"), msg.style);
         setSelectValue($("startEnd"), msg.startEnd);
