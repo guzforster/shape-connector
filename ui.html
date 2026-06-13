@@ -34,7 +34,7 @@
     color: var(--fg);
   }
 
-  #full { padding: 12px 16px; }
+  #full { padding: 12px 16px 20px; }
   .titlebar {
     display: flex;
     align-items: center;
@@ -113,12 +113,18 @@
     margin: 0;
     accent-color: var(--accent);
   }
-  /* Paired [slider][number-input] layout */
+  /* Paired [slider][number-input] layout — grid avoids range-input
+     intrinsic-width quirks where flex children won't shrink below their
+     min-content size, which would push the number input past the row's
+     right edge. The right padding pulls the number off the dropdown column. */
   .pair {
-    display: flex;
-    align-items: center;
+    display: grid;
+    grid-template-columns: 1fr 52px;
     gap: 8px;
+    align-items: center;
     flex: 1;
+    padding-right: 0;
+    min-width: 0;
   }
   button.action {
     font: inherit;
@@ -544,7 +550,31 @@
   $("expand").addEventListener("click", () => {
     document.body.classList.remove("minimized");
     send("expand");
+    // Force a height re-report so the window grows back to fit content.
+    reportContentHeight(true);
   });
+
+  // --- Dynamic window sizing ---------------------------------------------
+  // The window auto-fits its content (panel padding includes 20px bottom
+  // breathing room baked into #full). We observe size changes on #full and
+  // ask the plugin to resize the iframe — this keeps the margin constant
+  // whether the styles gallery is empty or full, label hint is short, etc.
+  let lastSentHeight = 0;
+  let resizeTimer = null;
+  function reportContentHeight(force) {
+    if (document.body.classList.contains("minimized")) return;
+    const h = $("full").offsetHeight;
+    if (!force && Math.abs(h - lastSentHeight) < 1) return;
+    lastSentHeight = h;
+    send("resizeUI", { height: h });
+  }
+  const ro = new ResizeObserver(() => {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { resizeTimer = null; reportContentHeight(false); }, 30);
+  });
+  ro.observe($("full"));
+  // Initial measurement once layout settles after the first paint.
+  window.addEventListener("load", () => setTimeout(() => reportContentHeight(true), 50));
 
   // --- Receive state from plugin -----------------------------------------
   window.addEventListener("message", (e) => {

@@ -1566,16 +1566,32 @@ function dockBottomRight(w, h) {
     const y = v.y + v.height - hCanvas - marginCanvas;
     figma.ui.reposition(x, y);
 }
+// The UI measures its own content height and sends `resizeUI` whenever the
+// content reflows (styles added/removed, hint changes, etc.). We remember
+// the latest expanded height so re-expanding from minimized starts at a
+// reasonable size before the next ResizeObserver tick refines it.
+let lastFullHeight = FULL_H;
+function clampHeight(h) {
+    // Loose bounds; the UI's own padding handles the 20px bottom margin so we
+    // just need to keep the window in a sane range.
+    return Math.max(120, Math.min(900, Math.round(h)));
+}
+function applyFullHeight(h) {
+    const clamped = clampHeight(h);
+    lastFullHeight = clamped;
+    figma.ui.resize(FULL_W, clamped);
+    dockBottomRight(FULL_W, clamped);
+}
 function minimizeUI() {
     figma.ui.resize(MINI_W, MINI_H);
     dockBottomRight(MINI_W, MINI_H);
 }
 function expandUI() {
-    figma.ui.resize(FULL_W, FULL_H);
-    // We don't reposition on expand — the window stays where the user docked it,
-    // just grows upward/leftward from there. Re-dock so it grows into the
-    // viewport rather than off-screen.
-    dockBottomRight(FULL_W, FULL_H);
+    // The ResizeObserver in the UI will report the exact content height a few
+    // ms after the body un-minimizes; we set a reasonable initial size here
+    // so the user doesn't see a tiny window flash before that arrives.
+    figma.ui.resize(FULL_W, lastFullHeight);
+    dockBottomRight(FULL_W, lastFullHeight);
 }
 // --- Bootstrap --------------------------------------------------------------
 figma.showUI(__html__, { width: FULL_W, height: FULL_H, themeColors: true });
@@ -1670,6 +1686,10 @@ figma.ui.onmessage = async (msg) => {
         }
         else if (msg.type === "expand") {
             expandUI();
+        }
+        else if (msg.type === "resizeUI") {
+            if (typeof msg.height === "number")
+                applyFullHeight(msg.height);
         }
     }
     catch (err) {
