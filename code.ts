@@ -192,6 +192,64 @@ function rectFor(node: SceneNode): Box {
   return { x: b.x, y: b.y, w: b.width, h: b.height, cx: b.x + b.width / 2, cy: b.y + b.height / 2 };
 }
 
+// --- Container resolution ---------------------------------------------------
+//
+// Connector groups live in the closest common ancestor of source and target.
+// If both shapes are inside the same frame/group, the connector belongs there
+// too; if they live in different parents, we walk up until we hit a shared
+// container — worst case, the current page.
+
+type Container = BaseNode & ChildrenMixin;
+
+function findCommonContainer(a: SceneNode, b: SceneNode): Container {
+  const aAncestorIds = new Set<string>();
+  let cur: BaseNode | null = a.parent;
+  while (cur) {
+    aAncestorIds.add(cur.id);
+    cur = cur.parent;
+  }
+  cur = b.parent;
+  while (cur) {
+    if (aAncestorIds.has(cur.id) && "appendChild" in cur) {
+      return cur as Container;
+    }
+    cur = cur.parent;
+  }
+  return figma.currentPage;
+}
+
+/** Container's absolute (x, y) translation. We use this to convert absolute
+ *  routing coordinates into the container-local space the children's
+ *  relativeTransforms operate in. Only translation is handled — rotated
+ *  containers will render slightly off; in practice frames/groups are
+ *  axis-aligned and this is enough. */
+function containerOffset(container: BaseNode): Point {
+  if (container.type === "PAGE") return { x: 0, y: 0 };
+  if (!("absoluteTransform" in container)) return { x: 0, y: 0 };
+  const t = (container as LayoutMixin).absoluteTransform;
+  return { x: t[0][2], y: t[1][2] };
+}
+
+function absoluteToLocal(p: Point, container: BaseNode): Point {
+  const off = containerOffset(container);
+  return { x: p.x - off.x, y: p.y - off.y };
+}
+
+function localizeBuiltPath(built: BuiltPath, container: BaseNode): BuiltPath {
+  // Page coords are already absolute; nothing to do.
+  if (container.type === "PAGE") return built;
+  return {
+    origin: absoluteToLocal(built.origin, container),
+    data: built.data, // path data is in offsets from origin — translation-invariant
+    startPoint: absoluteToLocal(built.startPoint, container),
+    endPoint: absoluteToLocal(built.endPoint, container),
+    midPoint: absoluteToLocal(built.midPoint, container),
+    // Tangents are direction vectors; pure translation doesn't affect them.
+    startTangent: built.startTangent,
+    endTangent: built.endTangent
+  };
+}
+
 type Side = "left" | "right" | "top" | "bottom";
 
 function chooseSides(a: Box, b: Box): { aSide: Side; bSide: Side } {
@@ -1036,7 +1094,7 @@ async function createConnector(
   target: SceneNode,
   defaults: Defaults
 ): Promise<Connection> {
-  const built = buildPath(
+  const builtAbs = buildPath(
     defaults.style,
     source,
     target,
@@ -1044,14 +1102,25 @@ async function createConnector(
     insetFor(defaults.endEnd, defaults.endSize)
   );
 
+  // The connector belongs in the closest common ancestor of source and target.
+  // Same frame/group → connector goes inside it; cross-container → walk up
+  // until we hit a shared one; worst case is the current page (the old default).
+  const container = findCommonContainer(source, target);
+  const built = localizeBuiltPath(builtAbs, container);
+
+  // Children get created at the document root by default. We move each one
+  // into `container` BEFORE positioning so the x/y/relativeTransform values
+  // we set are interpreted in the container's local coord space.
   const line = figma.createVector();
   line.name = "line";
+  container.appendChild(line);
   await paintLine(line, built, defaults.color, defaults.width);
 
   const startCap = makeCapNode(defaults.startEnd, defaults.color, defaults.width, defaults.endSize);
   const endCap = makeCapNode(defaults.endEnd, defaults.color, defaults.width, defaults.endSize);
   if (startCap) {
     startCap.name = "start-cap";
+    container.appendChild(startCap);
     if (isVectorCap(defaults.startEnd)) {
       positionVectorCap(startCap, defaults.startEnd, built.startPoint, built.startTangent, defaults.endSize);
     } else {
@@ -1060,6 +1129,7 @@ async function createConnector(
   }
   if (endCap) {
     endCap.name = "end-cap";
+    container.appendChild(endCap);
     if (isVectorCap(defaults.endEnd)) {
       positionVectorCap(endCap, defaults.endEnd, built.endPoint, built.endTangent, defaults.endSize);
     } else {
@@ -1071,15 +1141,22 @@ async function createConnector(
   const children: SceneNode[] = [line];
   if (startCap) children.push(startCap);
   if (endCap) children.push(endCap);
-  for (const child of children) figma.currentPage.appendChild(child);
 
-  const group = figma.group(children, figma.currentPage);
+  const group = figma.group(children, container);
   group.name = `Connector: ${source.name} → ${target.name}`;
   group.setPluginData(PLUGIN_DATA_KEY, "1");
   // Tag children too, so we can identify them on selection.
   line.setPluginData(PLUGIN_DATA_KEY, "child");
   if (startCap) startCap.setPluginData(PLUGIN_DATA_KEY, "child");
   if (endCap) endCap.setPluginData(PLUGIN_DATA_KEY, "child");
+
+  // If we landed inside an auto-layout frame, opt out of layout flow so our
+  // reroute math drives the group's position rather than the parent's layout.
+  if ("layoutMode" in container && (container as FrameNode).layoutMode !== "NONE") {
+    if ("layoutPositioning" in group) {
+      (group as unknown as { layoutPositioning: "ABSOLUTE" | "AUTO" }).layoutPositioning = "ABSOLUTE";
+    }
+  }
 
   return {
     id: group.id,
@@ -1109,13 +1186,18 @@ async function rerouteConnection(conn: Connection): Promise<boolean> {
   if (!source || !target) return false;
   if (!("absoluteBoundingBox" in source) || !("absoluteBoundingBox" in target)) return false;
 
-  const built = buildPath(
+  const builtAbs = buildPath(
     conn.style,
     source as SceneNode,
     target as SceneNode,
     insetFor(conn.startEnd, conn.endSize),
     insetFor(conn.endEnd, conn.endSize)
   );
+  // Localize to whatever the group currently lives in. If the user manually
+  // moved the connector group into a different frame after creation, this
+  // honors that move automatically.
+  const container = (group.parent || figma.currentPage) as BaseNode;
+  const built = localizeBuiltPath(builtAbs, container);
   await paintLine(line as VectorNode, built, conn.color, conn.width);
 
   if (conn.startCapId) {

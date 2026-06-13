@@ -16,10 +16,10 @@ A Figma plugin that connects any shape to any other shape with a line that stays
 - **Eight endpoint shapes per end** — None, Arrow, Filled/Hollow circle, Filled/Hollow square, Filled/Hollow semi-circle. Source and target are configured independently.
 - **Per-connector styling** — color, line width (0.5–20 px), endpoint size (4–60 px). All controls work on a single selected connector or a multi-selection.
 - **Labels** — add a text label to any connector. The label tracks the line's midpoint and rides a white pill so the line behind it stays readable. Use Figma's native text panel to change font, size, weight, or color. Empty the label's text to delete it.
-- **Saved styles** — capture a connector's full look (line + endpoints + color + width + text properties if labeled) as a reusable preset, then apply it back with one click. Each preset shows up as a small SVG thumbnail. Right-corner × deletes.
+- **Saved styles** — capture a connector's full look (line + endpoints + color + width + text properties if labeled) as a reusable preset, then apply it back with one click. 
 - **Editing existing connectors** — select any connector and the panel switches into "Editing N connectors" mode. Any control change applies to the selection. Selecting a *shape* puts every connector attached to it in scope too, so you can restyle every line touching a node in one move.
-- **Minimize to corner** — collapse the UI to a slim strip docked at the bottom-right of the viewport, so the plugin keeps running while you work.
-- **Persistent across sessions** — connections and saved styles live in the file (`figma.root.pluginData`), so everything survives plugin reload and reopening.
+- **Minimize to corner** — collapse the UI to a slim strip docked at the bottom-right of the viewport. Figma plugins can't run in the background — they stop the moment their window is closed — so the connectors only keep tracking your shapes while the plugin is open. Minimize lets the plugin stay alive (and the connectors keep following your shapes) without taking up screen space.
+- **Persistent across sessions** — connections and saved styles live in the file (`figma.root.pluginData`), so everything survives plugin reload and reopening. If you move shapes around while the plugin is closed, the lines may visually appear stuck — but they're not lost. As soon as you reopen the plugin it re-finds every connected shape by its ID and snaps the connectors back into place.
 
 ## Install
 
@@ -81,7 +81,7 @@ Select it and click **Delete selected connectors**.
 
 ### Minimize
 
-Click the **_** button at the top-right of the panel. It collapses to a thin strip in the bottom-right corner and keeps running in the background — necessary so the connectors keep tracking the shapes you move.
+Click the **_** button at the top-right of the panel. It collapses to a thin strip docked in the bottom-right corner. The plugin stays open in this slim form so the connectors keep following your shapes — Figma plugins stop the moment their window is closed, so the panel has to remain visible (in some form) to keep the routing alive.
 
 ## Project layout
 
