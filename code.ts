@@ -218,6 +218,20 @@ function findCommonContainer(a: SceneNode, b: SceneNode): Container {
   return figma.currentPage;
 }
 
+/** Groups (and boolean-op nodes) are TRANSPARENT in Figma's coordinate API —
+ *  a child of a group doesn't have its x/y in the group's coordinate space;
+ *  it has them in the group's parent's space, recursively. To convert our
+ *  absolute routing coords into the right local space we have to walk PAST
+ *  every group ancestor and land on the first real coordinate frame (a
+ *  frame, component, instance, or the page). */
+function coordinateContainer(parent: BaseNode): BaseNode {
+  let cur: BaseNode | null = parent;
+  while (cur && (cur.type === "GROUP" || cur.type === "BOOLEAN_OPERATION")) {
+    cur = cur.parent;
+  }
+  return cur || figma.currentPage;
+}
+
 /** Container's absolute (x, y) translation. We use this to convert absolute
  *  routing coordinates into the container-local space the children's
  *  relativeTransforms operate in. Only translation is handled — rotated
@@ -1106,7 +1120,9 @@ async function createConnector(
   // Same frame/group → connector goes inside it; cross-container → walk up
   // until we hit a shared one; worst case is the current page (the old default).
   const container = findCommonContainer(source, target);
-  const built = localizeBuiltPath(builtAbs, container);
+  // Coordinate localization has to target the first non-transparent ancestor,
+  // because children of a group inherit their parent-of-group's coord space.
+  const built = localizeBuiltPath(builtAbs, coordinateContainer(container));
 
   // Children get created at the document root by default. We move each one
   // into `container` BEFORE positioning so the x/y/relativeTransform values
@@ -1197,7 +1213,9 @@ async function rerouteConnection(conn: Connection): Promise<boolean> {
   // moved the connector group into a different frame after creation, this
   // honors that move automatically.
   const container = (group.parent || figma.currentPage) as BaseNode;
-  const built = localizeBuiltPath(builtAbs, container);
+  // Walk past transparent group ancestors — children's coords resolve in the
+  // first non-group container, not the immediate group parent.
+  const built = localizeBuiltPath(builtAbs, coordinateContainer(container));
   await paintLine(line as VectorNode, built, conn.color, conn.width);
 
   if (conn.startCapId) {
