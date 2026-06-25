@@ -23,6 +23,14 @@ A Figma plugin that connects any shape to any other shape with a line that stays
 
 ## Install
 
+### From the Figma Community
+
+Install it in one click from the Figma Community:
+
+**[Shape Connector on the Figma Community →](https://www.figma.com/community/plugin/1647599639795901210)**
+
+Open the listing and click **Open in…** (or **Try it out**) to add it to your Figma editor — no build step required. You can also click **Save** on the listing to add the plugin to your saved resources, then run it directly inside Figma. Once added, run it from **Plugins → Shape Connector** in any Figma Design file.
+
 ### From source (development)
 
 You need [Node.js](https://nodejs.org/) (16+) and the [Figma desktop app](https://www.figma.com/downloads/). The in-browser editor doesn't load local plugins.
@@ -39,10 +47,6 @@ Then in Figma desktop:
 1. **Menu → Plugins → Development → Import plugin from manifest…**
 2. Pick `manifest.json` from this folder.
 3. The plugin appears under **Plugins → Development → Shape Connector**.
-
-### From the Figma Community
-
-*Coming soon — this plugin is being prepared for Community submission.*
 
 ## Use
 
